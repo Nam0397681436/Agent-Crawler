@@ -1,7 +1,7 @@
-playwright==1.49.1
-python-dotenv==1.0.1
-langgraph==0.0.60
-langchain-core==0.1.52
-langchain-community==0.0.38
-langchain-ollama==0.1.1
+playwright>=1.49.1
+python-dotenv>=1.0.1
+mcp>=1.0.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
 psycopg2-binary==2.9.9
+kafka-python==2.3.2
