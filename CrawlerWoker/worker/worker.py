@@ -3,6 +3,7 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from core.browser import BrowserManager
 from core.tool_registry import ToolRegistry
 from Kafka.kafka import KafkaConsumer
@@ -10,29 +11,31 @@ from router_message import router_message
 
 
 async def main():
-    # Khởi tạo BrowserManager 1 lần duy nhất để dùng chung cho các message
-    browser_manager = BrowserManager()
-    await browser_manager.init_browser()
+    browser = BrowserManager()
+    await browser.start()
 
-    # Thực hiện đăng nhập Facebook 1 lần duy nhất khi khởi động
+    # Đăng nhập Facebook 1 lần duy nhất khi khởi động
     print("[*] Đang tiến hành đăng nhập Facebook...")
-    login_success = await browser_manager.login_fb("https://www.facebook.com")
-    if not login_success:
-        print("[-] Đăng nhập Facebook thất bại khi khởi động worker!")
+    page = await browser.new_page()
+    login_ok = await browser.ensure_login(page, "https://www.facebook.com")
+    if not login_ok:
+        print("[-] Đăng nhập thất bại. Thoát.")
+        await browser.stop(save_data_path=None)
         return
 
-    # Xử lý các popup trên trang chủ sau khi đăng nhập thành công
     from services.check_page import dismiss_popups
-    if browser_manager.page:
-        await dismiss_popups(browser_manager.page)
-    print("[+] Đăng nhập và cấu hình môi trường Facebook thành công!")
+    await dismiss_popups(page)
+    print("[+] Đăng nhập và cấu hình môi trường thành công!")
 
     consumer = KafkaConsumer()
     topic_crawl = os.getenv("TOPIC_TASK_CRAWL", "task_queue_crawl")
 
-    for message in consumer.consumer_with_task(topic_crawl, offset=6):
-        print(message)
-        await router_message(message, browser_manager)
+    try:
+        for message in consumer.consumer_with_task(topic_crawl, offset=6):
+            print(message)
+            await router_message(message, browser)
+    finally:
+        await browser.stop()
 
 
 if __name__ == "__main__":
