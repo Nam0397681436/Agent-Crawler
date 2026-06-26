@@ -72,6 +72,7 @@ async def _scroll(page: Page, direction: str = "down", times: int = 3, **_) -> d
     """Cuộn trang (anti-bot aware scroll)."""
     try:
         await smart_scroll_for_api(page, max_scroll_loops=times, debug=False)
+        await _scroll_to_top(page)
         return {
             "status": "ok",
             "action": "scroll",
@@ -92,7 +93,7 @@ async def _scroll_to_top(page: Page, **_) -> dict:
         if scroll_y > target_y:
             distance_to_scroll = -(scroll_y - target_y)
             await smooth_wheel_scroll(
-                page=page, distance=distance_to_scroll, min_steps=15, max_steps=30
+                page=page, distance=distance_to_scroll, min_steps=5, max_steps=10
             )
             await page.wait_for_timeout(random.randint(600, 1000))
         return {"status": "ok", "action": "scroll_to_top"}
@@ -161,8 +162,8 @@ async def _done(page: Page, summary: str, **_) -> dict:
 
 async def _hover_users(
     page: Page,
-    scroll_rounds: int = 3,
-    hover_delay_ms: int = 1200,
+    scroll_rounds: int = 5,
+    hover_delay_ms: int = 1200,       # Giảm từ 2300 → 1200ms (đủ để FB kích hoạt API)
     discovery_entity: list[dict] | None = None,
     on_bulk_response=None,  # async callable(raw_text: str) -> None
     **_,
@@ -226,9 +227,13 @@ async def _hover_users(
     total_rounds = 0
 
     from services.mouse_action import _move_mouse_curve
+    from services.parse_bulk_route import bulk_route_parser_worker
 
     # Vị trí ban đầu của chuột (góc trên trái an toàn)
     cur_x, cur_y = 100.0, 300.0
+
+    # Theo dõi href đã hover để bỏ qua giữa các round
+    seen_hrefs: set[str] = set()
 
     for round_i in range(scroll_rounds):
         total_rounds += 1
@@ -240,50 +245,54 @@ async def _hover_users(
             logger.warning(f"[hover_users] Lỗi khi chạy FIND_CARDS_JS: {e}")
             cards = []
 
-        in_viewport_cards = [c for c in cards if c.get("in_viewport")]
+        # Chỉ lấy card trong viewport VÀ chưa hover lần nào
+        in_viewport_cards = [
+            c for c in cards
+            if c.get("in_viewport") and c.get("href") not in seen_hrefs
+        ]
         logger.info(
-            f"[hover_users] Round {round_i+1}: tìm thấy {len(in_viewport_cards)} user card trong viewport"
+            f"[hover_users] Round {round_i+1}: {len(in_viewport_cards)} card mới trong viewport "
+            f"(đã bỏ qua {len(cards) - len(in_viewport_cards)} card trùng/ngoài viewport)"
         )
 
         for card in in_viewport_cards:
+            href = card.get("href", "")
+            seen_hrefs.add(href)
             try:
                 target_x = card["x"] + random.uniform(-5, 5)
                 target_y = card["y"] + random.uniform(-3, 3)
 
-                wait_ms = hover_delay_ms + random.randint(-200, 300)
+                # Timeout ngắn hơn — chỉ đủ để FB kích hoạt API sau khi hover
+                wait_ms = hover_delay_ms + random.randint(-100, 150)
 
-                # Lắng nghe response bulk-route-definitions xuất hiện sau khi hover
+                # Di chuyển chuột trước (nhanh hơn, ít bước hơn)
+                await _move_mouse_curve(
+                    page=page,
+                    start_x=cur_x,
+                    start_y=cur_y,
+                    end_x=target_x,
+                    end_y=target_y,
+                    total_time_ms=random.uniform(180, 350),  # Giảm từ 300-600 → 180-350ms
+                    steps=random.randint(5, 10),              # Giảm từ 8-18 → 5-10 bước
+                    jitter_scale=0.5,
+                )
+                cur_x, cur_y = target_x, target_y
+
+                # Lắng nghe response bulk-route-definitions
                 try:
                     async with page.expect_response(
                         lambda r: "bulk-route-definitions/" in r.url,
-                        timeout=wait_ms + 2000,
+                        timeout=wait_ms,
                     ) as bulk_resp_info:
-                        # Di chuyển chuột theo đường cong Bezier giống người thật
-                        await _move_mouse_curve(
-                            page=page,
-                            start_x=cur_x,
-                            start_y=cur_y,
-                            end_x=target_x,
-                            end_y=target_y,
-                            total_time_ms=random.uniform(300, 600),
-                            steps=random.randint(8, 18),
-                            jitter_scale=0.8,
-                        )
-                        cur_x, cur_y = target_x, target_y
                         await page.wait_for_timeout(wait_ms)
 
                     # Bắt được response → xử lý
                     bulk_resp = await bulk_resp_info.value
                     raw_text = await bulk_resp.text()
 
-                    from services.parse_bulk_route import bulk_route_parser_worker
-
                     is_entity = bulk_route_parser_worker(raw_text)
                     if is_entity and discovery_entity is not None:
-                        href = card.get("href")
-                        logger.info(
-                            f"[hover_users] Tìm thấy user card trong viewport: {href}"
-                        )
+                        logger.info(f"[hover_users] Entity tìm thấy: {href}")
                         if href and not href.endswith("facebook.com/"):
                             discovery_entity.append(
                                 {
@@ -293,33 +302,28 @@ async def _hover_users(
                                 }
                             )
 
-                    # if on_bulk_response: #hàm callback nếu cần
-                    #     await on_bulk_response(raw_text)
-
                 except Exception:
-                    # Timeout hoặc không có response — vẫn tiếp tục hover
-                    await _move_mouse_curve(
-                        page=page,
-                        start_x=cur_x,
-                        start_y=cur_y,
-                        end_x=target_x,
-                        end_y=target_y,
-                        total_time_ms=random.uniform(300, 600),
-                        steps=random.randint(8, 18),
-                        jitter_scale=0.8,
-                    )
-                    cur_x, cur_y = target_x, target_y
-                    await page.wait_for_timeout(wait_ms)
+                    # Timeout — không wait thêm, chuyển card tiếp theo ngay
+                    pass
 
                 total_hovered += 1
             except Exception:
                 pass
 
-        # Cuộn xuống để load batch tiếp theo
+        # Cuộn xuống để load batch tiếp theo — kiểm tra đáy trước
         from services.scroll_antibot import smooth_wheel_scroll
 
-        await smooth_wheel_scroll(page, distance=700, min_steps=6, max_steps=14)
-        await page.wait_for_timeout(random.randint(2000, 3500))
+        scroll_y_before = await page.evaluate("() => window.scrollY")
+        await smooth_wheel_scroll(page, distance=500, min_steps=6, max_steps=14)
+        scroll_y_after = await page.evaluate("() => window.scrollY")
+
+        if scroll_y_after <= scroll_y_before:
+            logger.info(
+                f"[hover_users] Đã chạm đáy trang sau round {round_i+1}/{scroll_rounds}. Dừng sớm."
+            )
+            break
+
+    await _scroll_to_top(page)
 
     return {
         "status": "ok",
@@ -327,6 +331,7 @@ async def _hover_users(
         "total_hovered": total_hovered,
         "rounds": total_rounds,
     }
+
 
 
 # ---------------------------------------------------------------------------

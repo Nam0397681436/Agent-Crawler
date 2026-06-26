@@ -95,8 +95,11 @@ async def capture_photos(page: Page, scroll_rounds: int = 2) -> list[dict]:
 
         # Scroll xuống để load thêm
         await page.evaluate("window.scrollBy(0, 500)")
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(1000)
 
+    from core.actions import _scroll_to_top
+
+    await _scroll_to_top(page)
     result = list(all_photos.values())
     logger.info(f"[capture_photos] Hoàn tất: {len(result)} ảnh")
     return result

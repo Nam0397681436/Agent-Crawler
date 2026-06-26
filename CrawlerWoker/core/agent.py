@@ -32,6 +32,7 @@ from openai import AsyncOpenAI
 from playwright.async_api import Page
 
 from core import dom_extractor, actions
+from services.publisher_kafka import KafkaPublisher
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ Mỗi bước bạn nhận được:
 Nhiệm vụ của bạn là lần lượt thực hiện các hành động để hoàn thành task.
 Quy tắc bắt buộc:
   1. LUÔN gọi đúng 1 tool mỗi bước. Không được trả lời tự do.
-  2. Dùng `extract_data` ngay khi thấy thông tin quan trọng (tên, tiểu sử, nội quy, …).
+  2. Chỉ dùng `extract_data` khi task yêu cầu — tuân thủ đúng quy tắc extract trong task.
   3. Dùng `ask_user` nếu gặp captcha, xác minh, hoặc bất kỳ thứ gì rủi ro.
   4. Gọi `done` kèm tổng kết khi đã hoàn thành hoặc không thể tiến tiếp.
   5. Ưu tiên click vào phần tử TRONG VIEWPORT trước khi scroll.
@@ -66,7 +67,7 @@ class FacebookAgent:
         self,
         task: str,
         max_steps: int = 40,
-        history_window: int = 10,
+        history_window: int = 6,
         model: str | None = None,
     ):
         self.task = task
@@ -99,10 +100,16 @@ class FacebookAgent:
         summary = ""
         first_capture_avatar = True
         photos_captured = False
+        url_avatar = None
+        SKIP_PERCEPTION_ACTIONS = {
+            "extract_data",
+            "done",
+            "ask_user",
+        }  # các action không cần perception
+        last_action = None  # action cuối cùng
 
         for step in range(1, self.max_steps + 1):
             logger.info(f"[agent] Bước {step}/{self.max_steps}")
-
             if first_capture_avatar:
                 from services.capture_img import capture_avatar
 
@@ -111,9 +118,10 @@ class FacebookAgent:
                 first_capture_avatar = False
 
             # ── 1. Perception ──────────────────────────────────────────
-            state = await dom_extractor.extract(page)
-            user_msg = self._build_perception_message(state)
-            history.append(user_msg)
+            if last_action not in SKIP_PERCEPTION_ACTIONS:
+                state = await dom_extractor.extract(page)
+                user_msg = self._build_perception_message(state)
+                history.append(user_msg)
 
             # Cắt bớt lịch sử cũ (giữ system + task + N bước gần nhất)
             history = _trim_history(history, self.history_window)
@@ -143,6 +151,7 @@ class FacebookAgent:
                 break
 
             action_name = tool_call.function.name
+            last_action = action_name
             try:
                 params: dict = json.loads(tool_call.function.arguments)
             except json.JSONDecodeError:
@@ -184,7 +193,10 @@ class FacebookAgent:
                         "status": "ok",
                         "action": "click",
                         "element_id": element_id,
-                        "message": "Đã click nút, và tôi đã dùng hàm capture_photos để khám phá lấy hết ảnh. Hãy chuyển sang tab khác để crawl",
+                        "photos_captured": len(photos),
+                        "message": "Đã capture xong ảnh.",
+                        "next_action_hint": "navigate_to_other_tab",
+                        "warning": "KHÔNG scroll. Trang photos đã xử lý xong.",
                     }
 
             elif action_name == "hover_users":
@@ -242,12 +254,17 @@ class FacebookAgent:
             logger.warning(f"[agent] Đã đạt giới hạn {self.max_steps} bước.")
             summary = f"Đã đạt giới hạn {self.max_steps} bước."
 
-        return {
-            "task": self.task,
+        result_data = {
             "extracted_data": self.extracted_data,
             "discovery_entity_ralationship": self.discovery_entity,
             "summary": summary,
         }
+
+        topic = os.getenv("TOPIC_ENTITY_INFO", "entity_info_crawl").strip()
+        kafka_publisher = KafkaPublisher()
+        await kafka_publisher.publish(result_data, topic=topic)
+
+        return result_data
 
     # ------------------------------------------------------------------
     # Internal helpers

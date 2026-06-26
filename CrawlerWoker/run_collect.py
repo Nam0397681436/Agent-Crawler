@@ -67,6 +67,7 @@ async def discovery_tree(
                 out_path = os.path.join(
                     os.path.dirname(__file__), "collect_result_temp.json"
                 )
+
                 with open(out_path, "w", encoding="utf-8") as f:
                     json.dump(all_results, f, ensure_ascii=False, indent=2)
 
@@ -117,14 +118,10 @@ async def main():
                 all_results=all_results,
             )
 
-        # Lưu kết quả toàn bộ ra file
-        out_path = os.path.join(os.path.dirname(__file__), "collect_result.json")
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(all_results, f, ensure_ascii=False, indent=2)
-        logger.info(
-            f"[run_collect] Đã lưu toàn bộ kết quả ({len(all_results)} profiles) → {out_path}"
-        )
-
+        # # Lưu kết quả toàn bộ ra file
+        # out_path = os.path.join(os.path.dirname(__file__), "collect_result.json")
+        # with open(out_path, "w", encoding="utf-8") as f:
+        #     json.dump(all_results, f, ensure_ascii=False, indent=2)
     finally:
         await browser.stop()
 

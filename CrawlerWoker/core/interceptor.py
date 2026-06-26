@@ -1,17 +1,17 @@
-import os
-import uuid
+import asyncio
+import logging
 from playwright.async_api import Response
 from model.factory_capture_api import FactoryRegexApi
+from services.publisher_kafka import KafkaPublisher
+
+logger = logging.getLogger(__name__)
 
 
 class Interceptor:
     def __init__(self, factory: FactoryRegexApi, domain_name: str):
         self.factory = factory
-        self.storage_data = []
-        self.bulk_route_data = []
         self.domain_name = domain_name
-        self.media_dir = os.path.join(os.getcwd(), "media")
-        os.makedirs(self.media_dir, exist_ok=True)
+        self.kafka_publisher = KafkaPublisher()
 
     async def capture_network(self, response: Response):
         url = response.url
@@ -35,61 +35,27 @@ class Interceptor:
 
             if not should_capture:
                 return
-
-        # Check for bulk-route-definitions specifically to push to a separate queue
-        if "bulk-route-definitions/" in url:
-            try:
-                data = await response.text()
-                self.bulk_route_data.append(
-                    {
-                        "url": url,
-                        "method": request.method,
-                        "status": response.status,
-                        "data": data,
-                    }
-                )
-            except Exception:
-                pass
-            return  # Push to separate queue and exit
-
         content_type = response.headers.get("content-type", "")
 
         is_media = "image" in content_type or "video" in content_type
-        is_text = "json" in content_type or "text" in content_type or "graphql" in content_type
+        is_text = (
+            "json" in content_type
+            or "text" in content_type
+            or "graphql" in content_type
+        )
 
         if not is_media and not is_text:
             return
 
-        data = None
-        media_path = None
-
-        if is_media:
-            try:
-                # Lấy binary body của ảnh/video
-                body = await response.body()
-                if body:
-                    # Tạo tên file random để tránh trùng lặp
-                    ext = content_type.split("/")[-1].split(";")[0]
-                    if ext == "jpeg":
-                        ext = "jpg"
-                    
-                    filename = f"{uuid.uuid4().hex[:12]}.{ext}"
-                    local_path = os.path.join(self.media_dir, filename)
-                    
-                    with open(local_path, "wb") as f:
-                        f.write(body)
-                    
-                    media_path = local_path
-            except Exception:
-                pass
-        else:
+        # Không bắn vào kafka nếu content_type là image, video (khi biến is_media là True)
+        # Tạm thời chỉ bắn api có url bắt đầu bằng https://web.facebook.com/api/graphql/
+        if not is_media and "/api/graphql/" in url:
             try:
                 data = await response.text()
             except Exception:
-                pass
+                logger.error(f"Failed to get response text from {url}")
 
-        self.storage_data.append(
-            {
+            record = {
                 "url": url,
                 "method": request.method,
                 "status": response.status,
@@ -97,6 +63,6 @@ class Interceptor:
                 "content_type": content_type,
                 "post_data": request.post_data,
                 "data": data,
-                "media_path": media_path,
             }
-        )
+
+            await self.kafka_publisher.publish(record)

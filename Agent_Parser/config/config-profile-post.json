@@ -1,0 +1,12 @@
+{
+  "post_id": "$.data.node.post_id",
+  "post_url": "$.data.node.permalink_url",
+  "content": "$.data.node.comet_sections.content.story.message.text",
+  "created_time": "$.data.node.timestamp.story.creation_time",
+  "actor_id": "$.data.node.actors[0].id",
+  "actor_name": "$.data.node.actors[0].name",
+  "actor_url": "$.data.node.actors[0].url",
+  "post_type": null,
+  "attachments_images": "$.data.node.attachments[*].styles.attachment.media.image.uri",
+  "attachments_videos": null
+}

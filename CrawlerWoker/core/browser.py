@@ -9,6 +9,7 @@ Chỉ xử lý vòng đời trình duyệt:
 Mọi logic nghiệp vụ (đăng nhập, popup, cuộn, …) nằm ở
 services/ hoặc các lớp bên ngoài.
 """
+
 import os
 import sys
 import json
@@ -80,8 +81,6 @@ class BrowserManager:
         # Event để biết khi nào trình duyệt bị đóng từ bên ngoài
         self.stop_event = asyncio.Event()
         self.context.on("close", lambda _: self.stop_event.set())
-        # Tự động lưu dữ liệu interceptor ngay khi context bị đóng (kể cả đóng tay)
-        self.context.on("close", lambda _: self._save_interceptor_data())
 
         # Interceptor bắt response mạng
         self.interceptor = Interceptor(FactoryRegexApi(), "facebook")
@@ -92,12 +91,10 @@ class BrowserManager:
 
         return self.context
 
-    async def stop(self, save_data_path: str | None = None) -> None:
+    async def stop(self) -> None:
         """
-        Tắt trình duyệt và luôn đảm bảo lưu dữ liệu API.
+        Tắt trình duyệt.
         """
-        self._save_interceptor_data(save_data_path)
-
         try:
             if self.context:
                 await self.context.close()
@@ -112,39 +109,6 @@ class BrowserManager:
         self.context = None
         self.playwright = None
         logger.info("[browser] Đã tắt trình duyệt.")
-
-    def _save_interceptor_data(self, path: str | None = None) -> None:
-        """Lưu toàn bộ API responses đã bắt được ra file JSON có timestamp."""
-        if not getattr(self, "interceptor", None):
-            return
-
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Save general API data
-        if getattr(self.interceptor, "storage_data", []):
-            current_path = path if path else os.path.join(os.getcwd(), f"api_data_{ts}.json")
-            try:
-                with open(current_path, "w", encoding="utf-8") as f:
-                    json.dump(self.interceptor.storage_data, f, ensure_ascii=False, indent=2)
-                logger.info(
-                    f"[browser] Đã lưu {len(self.interceptor.storage_data)} API responses → {current_path}"
-                )
-                self.interceptor.storage_data = []
-            except Exception as e:
-                logger.error(f"[browser] Lỗi khi lưu file: {e}")
-                
-        # Save bulk-route-definitions data to a separate file
-        if getattr(self.interceptor, "bulk_route_data", []):
-            bulk_path = os.path.join(os.getcwd(), f"api_bulk_data_{ts}.json")
-            try:
-                with open(bulk_path, "w", encoding="utf-8") as f:
-                    json.dump(self.interceptor.bulk_route_data, f, ensure_ascii=False, indent=2)
-                logger.info(
-                    f"[browser] Đã lưu {len(self.interceptor.bulk_route_data)} BULK API responses → {bulk_path}"
-                )
-                self.interceptor.bulk_route_data = []
-            except Exception as e:
-                logger.error(f"[browser] Lỗi khi lưu file bulk: {e}")
 
     # ------------------------------------------------------------------
     # Page factory
