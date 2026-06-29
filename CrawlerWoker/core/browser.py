@@ -65,18 +65,30 @@ class BrowserManager:
 
     async def start(self) -> BrowserContext:
         """Khởi động Playwright, load extension, mở persistent context."""
-        self.playwright = await async_playwright().start()
+        if not self.playwright:
+            self.playwright = await async_playwright().start()
 
         extension_path = self._prepare_extension()
         args = self._build_browser_args(extension_path)
 
-        logger.info(f"[browser] Khởi tạo profile tại: {self.profile_path}")
+        # Lấy proxy mới
+        from config.fetch_proxy import get_new_proxy
+
+        proxy_url = get_new_proxy()
+        proxy_cfg = {"server": proxy_url} if proxy_url else None
+
+        logger.info(
+            f"[browser] Khởi tạo profile tại: {self.profile_path} | Proxy: {proxy_url}"
+        )
         self.context = await self.playwright.chromium.launch_persistent_context(
             user_data_dir=self.profile_path,
             headless=False,
             args=args,
             no_viewport=True,
+            proxy=proxy_cfg,
         )
+
+        self.last_start_time = datetime.now()
 
         # Event để biết khi nào trình duyệt bị đóng từ bên ngoài
         self.stop_event = asyncio.Event()
@@ -90,6 +102,24 @@ class BrowserManager:
         await register_browser_dialog_handlers(self.context)
 
         return self.context
+
+    async def rotate_proxy_if_needed(self, interval_seconds: int = 1200) -> bool:
+        """
+        Kiểm tra và xoay proxy nếu đã chạy quá interval_seconds.
+        Trả về True nếu đã xoay, False nếu chưa đến lúc.
+        Gọi trước mỗi lần crawl một URL mới để đảm bảo proxy luôn được làm mới.
+        """
+        if not hasattr(self, "last_start_time"):
+            return False
+        elapsed = (datetime.now() - self.last_start_time).total_seconds()
+        if elapsed >= interval_seconds:
+            logger.info(
+                f"[browser] Proxy đã dùng {elapsed:.0f}s — Đang xoay proxy mới..."
+            )
+            await self.stop()
+            await self.start()
+            return True
+        return False
 
     async def stop(self) -> None:
         """

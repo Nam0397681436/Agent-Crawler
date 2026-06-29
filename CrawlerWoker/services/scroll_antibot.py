@@ -6,10 +6,10 @@ from playwright.async_api import Page
 
 async def smart_scroll_for_api(
     page: Page,
-    max_scroll_loops: int = 10,
-    chunk_distance: int = 1400,
-    min_wait_ms: int = 3000,
-    max_wait_ms: int = 6000,
+    max_scroll_loops: int = 20,
+    chunk_distance: int = 2000,
+    min_wait_ms: int = 500,
+    max_wait_ms: int = 700,
     stable_limit: int = 3,
     bottom_threshold_px: int = 500,
     debug: bool = True,
@@ -78,8 +78,8 @@ async def smart_scroll_for_api(
         wheel_count = await smooth_wheel_scroll(
             page=page,
             distance=distance,
-            min_steps=6,
-            max_steps=18,
+            min_steps=3,
+            max_steps=8,
         )
 
         report["scroll_loops"] += 1
@@ -90,7 +90,7 @@ async def smart_scroll_for_api(
         if debug:
             print(f"💤 Wait {wait_ms}ms for API/load")
 
-        await page.wait_for_timeout(wait_ms)
+        await page.wait_for_timeout(wait_ms)  # caller controls this via min/max_wait_ms
 
         after = await _get_scroll_metrics(page)
 
@@ -114,7 +114,7 @@ async def smart_scroll_for_api(
                 distance,
             )
 
-            await page.wait_for_timeout(random.randint(700, 1200))
+            await page.wait_for_timeout(random.randint(200, 400))
 
             after = await _get_scroll_metrics(page)
 
@@ -167,8 +167,8 @@ async def smart_scroll_for_api(
 async def smooth_wheel_scroll(
     page: Page,
     distance: float,
-    min_steps: int = 6,
-    max_steps: int = 18,
+    min_steps: int = 3,
+    max_steps: int = 8,
 ) -> int:
     """
     Scroll mượt theo một chunk.
@@ -200,11 +200,11 @@ async def smooth_wheel_scroll(
 
         previous_y = current_y
 
-        await page.wait_for_timeout(random.randint(25, 90))
+        await page.wait_for_timeout(random.randint(10, 35))
 
     # Thỉnh thoảng scroll ngược nhẹ để UI/lazy-load ổn hơn.
     if random.random() < 0.20:
-        await page.wait_for_timeout(random.randint(100, 250))
+        await page.wait_for_timeout(random.randint(50, 120))
         await page.mouse.wheel(0, -random.randint(30, 90))
 
     return steps

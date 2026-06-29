@@ -41,14 +41,8 @@ Bạn là một agent tự động hoá trình duyệt Facebook chạy trên Pla
 Mỗi bước bạn nhận được:
   - Trạng thái trang hiện tại (danh sách phần tử tương tác với id, role, text)
   - Ảnh chụp màn hình viewport
-
-Nhiệm vụ của bạn là lần lượt thực hiện các hành động để hoàn thành task.
-Quy tắc bắt buộc:
-  1. LUÔN gọi đúng 1 tool mỗi bước. Không được trả lời tự do.
-  2. Chỉ dùng `extract_data` khi task yêu cầu — tuân thủ đúng quy tắc extract trong task.
-  3. Dùng `ask_user` nếu gặp captcha, xác minh, hoặc bất kỳ thứ gì rủi ro.
-  4. Gọi `done` kèm tổng kết khi đã hoàn thành hoặc không thể tiến tiếp.
-  5. Ưu tiên click vào phần tử TRONG VIEWPORT trước khi scroll.
+Mỗi bước gọi đúng 1 tool.
+Quy tắc: (1) Không trả lời tự do. (2) ask_user nếu captcha/rủi ro. (3) done khi xong/bế tắc.
 """.strip()
 
 
@@ -115,6 +109,7 @@ class FacebookAgent:
 
                 url_avatar = await capture_avatar(page, self.extracted_data)
                 self.extracted_data.append({"url_avatar": url_avatar})
+                self.extracted_data.append({"url_entity": page.url})
                 first_capture_avatar = False
 
             # ── 1. Perception ──────────────────────────────────────────
@@ -183,12 +178,7 @@ class FacebookAgent:
                     photos = await capture_photos(page, scroll_rounds=2)
                     photos_captured = True
                     if photos:
-                        self.extracted_data.append(
-                            {
-                                "label": "photos",
-                                "content": photos,
-                            }
-                        )
+                        self.extracted_data.append({"photos": photos})
                     result = {
                         "status": "ok",
                         "action": "click",
@@ -198,14 +188,27 @@ class FacebookAgent:
                         "next_action_hint": "navigate_to_other_tab",
                         "warning": "KHÔNG scroll. Trang photos đã xử lý xong.",
                     }
-
-            elif action_name == "hover_users":
-                # Inject discovery_url_entity để hàm có thể lưu href entity tìm được
-                result = await actions.execute(
-                    action_name,
-                    page,
-                    {**params, "discovery_entity": self.discovery_entity},
-                )
+                elif (
+                    "/friends" in current_url
+                    or "/followers" in current_url
+                    or "/members" in current_url
+                ):
+                    # Tự động gọi hover_users — không cần agent quyết định
+                    hover_result = await actions._hover_users(
+                        page=page,
+                        scroll_rounds=10,
+                        hover_delay_ms=500,
+                        discovery_entity=self.discovery_entity,
+                    )
+                    logger.info(f"[agent] hover_users xong: {hover_result}")
+                    result = {
+                        "status": "ok",
+                        "action": "click",
+                        "element_id": element_id,
+                        "message": "Đã hover lấy xong danh sách users.",
+                        "next_action_hint": "navigate_to_other_tab",
+                        "warning": "KHÔNG xử lý nữa. Danh sách bạn bè/ followers/ members đã xử lý xong.",
+                    }
             else:
                 result = await actions.execute(action_name, page, params)
 
@@ -231,12 +234,23 @@ class FacebookAgent:
                         }
                     )
                     url_avatar = None
-                self.extracted_data.append(
-                    {
-                        "label": result.get("label"),
-                        "content": result.get("content"),
-                    }
-                )
+                if result.get("label") and result.get("content"):
+                    self.extracted_data.append(
+                        {
+                            "label": result.get("label"),
+                            "content": result.get("content"),
+                        }
+                    )
+
+                if result.get("data"):
+                    for item in result.get("data"):
+                        if item.get("label") and item.get("content"):
+                            self.extracted_data.append(
+                                {
+                                    "label": item.get("label"),
+                                    "content": item.get("content"),
+                                }
+                            )
 
             if result.get("status") == "ask_user":
                 logger.warning(

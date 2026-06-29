@@ -88,14 +88,25 @@ async def _scroll_to_top(page: Page, **_) -> dict:
     try:
         from services.scroll_antibot import smooth_wheel_scroll
 
+        TARGET_Y = random.randint(490, 500)  # Pixel cách đỉnh trang — luôn cố định
+
         scroll_y = await page.evaluate("window.scrollY || window.pageYOffset || 0")
-        target_y = 300
-        if scroll_y > target_y:
-            distance_to_scroll = -(scroll_y - target_y)
+        distance_to_scroll = TARGET_Y - scroll_y
+
+        if abs(distance_to_scroll) > 10:
+
+            # Bước 1: cuộn mượt bằng wheel để trông tự nhiên (anti-bot)
             await smooth_wheel_scroll(
-                page=page, distance=distance_to_scroll, min_steps=5, max_steps=10
+                page=page, distance=distance_to_scroll, min_steps=7, max_steps=12
             )
-            await page.wait_for_timeout(random.randint(600, 1000))
+            await page.wait_for_timeout(random.randint(300, 500))
+
+        # Bước 2: snap chính xác về TARGET_Y bằng JS (bỏ qua noise của wheel)
+        await page.evaluate(
+            f"window.scrollTo({{ top: {TARGET_Y}, left: 0, behavior: 'instant' }})"
+        )
+        await page.wait_for_timeout(random.randint(200, 400))
+
         return {"status": "ok", "action": "scroll_to_top"}
     except Exception as e:
         return {"status": "error", "action": "scroll_to_top", "error": str(e)}
@@ -130,26 +141,29 @@ async def _wait(page: Page, ms: int = 2000, **_) -> dict:
     return {"status": "ok", "action": "wait", "ms": ms}
 
 
-async def _extract_data(page: Page, label: str, content: str, **_) -> dict:
+async def _extract_data(
+    page: Page, label: str = None, content: str = None, data: list[dict] = None, **_
+) -> dict:
     """
     Agent gọi action này để ghi nhận dữ liệu đã đọc được trên trang.
-    Không tương tác với Playwright — chỉ là tín hiệu để vòng lặp lưu lại.
+    Hỗ trợ cả việc gửi 1 phần tử lẻ (label, content) hoặc 1 danh sách nhiều phần tử (data).
     """
     return {
         "status": "ok",
         "action": "extract_data",
         "label": label,
         "content": content,
+        "data": data or [],
     }
 
 
 async def _ask_user(page: Page, question: str, **_) -> dict:
     """
     Agent gọi khi gặp captcha, xác minh, hoặc tình huống rủi ro.
-    Tạm dừng 5 giây để người dùng có thời gian thao tác trước khi dừng nhiệm vụ.
+    Tạm dừng 6 giây để người dùng có thời gian thao tác trước khi dừng nhiệm vụ.
     """
     logger.warning(f"[ask_user] Yêu cầu can thiệp: {question}")
-    for i in range(5, 0, -1):
+    for i in range(6, 0, -1):
         logger.info(f"[ask_user] Đang tạm dừng trình duyệt... còn {i} giây")
         await page.wait_for_timeout(1000)
     return {"status": "ask_user", "action": "ask_user", "question": question}
@@ -162,22 +176,21 @@ async def _done(page: Page, summary: str, **_) -> dict:
 
 async def _hover_users(
     page: Page,
-    scroll_rounds: int = 5,
-    hover_delay_ms: int = 1200,       # Giảm từ 2300 → 1200ms (đủ để FB kích hoạt API)
+    scroll_rounds: int = 10,
+    hover_delay_ms: int = 800,  # Giảm từ 1200ms → 800ms; global listener không cần wait dài
     discovery_entity: list[dict] | None = None,
     on_bulk_response=None,  # async callable(raw_text: str) -> None
     **_,
 ) -> dict:
     """
     Hover lần lượt qua từng thẻ người dùng trong trang Bạn bè / Thành viên.
-    Mỗi lần hover sẽ kích hoạt bulk-route-definitions API của Facebook.
-    Nếu truyền `on_bulk_response`, hàm đó sẽ được gọi ngay khi bắt được response.
+
+    ── Tối ưu v2 (global listener) ────────────────────────────────────────────
+    Thay vì dùng `page.expect_response()` cho mỗi card (block 1200ms/card),
+    ta dùng 1 listener `page.on("response")` toàn cục chạy suốt toàn bộ hàm.
+    Hover card nhanh, response được xử lý song song — giảm ~70% thời gian chờ.
+    ────────────────────────────────────────────────────────────────────────────
     """
-    # Selector dựa trên cấu trúc thực tế của thẻ bạn bè / thành viên Facebook:
-    # <a role="link" aria-hidden="true" href="https://web.facebook.com/{username}">
-    #     <img height="80" width="80" ...>   ← avatar cố định 80×80
-    # </a>
-    # Dùng JS evaluate để tìm chính xác vì :has() không phải lúc nào cũng hỗ trợ tốt
 
     FIND_CARDS_JS = """
     () => {
@@ -191,7 +204,14 @@ async def _hover_users(
             if (!avatarAnchor) continue;
 
             const href = avatarAnchor.href || '';
-            if (!href.includes('facebook.com/')) continue;
+            const excludedPaths = ['/place', '/page', '/groups', '/post', '/videos'];
+
+            if (
+                !href.includes('facebook.com/') ||
+                excludedPaths.some(path => href.includes(path))
+            ) {
+                continue;
+            }
             if (href.includes('/friends') || href.endsWith('facebook.com/')) continue;
             if (seen.has(href)) continue;
 
@@ -200,10 +220,8 @@ async def _hover_users(
 
             const nameEl = card.querySelector('a[role="link"]:not([aria-hidden]) span[dir="auto"]');
             const name = nameEl ? nameEl.textContent.trim() : null;
-
             const imageUrl = img.src || null;
 
-            // Tọa độ để hover
             const rect = avatarAnchor.getBoundingClientRect();
             if (rect.width === 0 || rect.height === 0) continue;
             const inViewport = rect.top < window.innerHeight && rect.bottom > 0;
@@ -223,105 +241,131 @@ async def _hover_users(
     }
     """
 
-    total_hovered = 0
-    total_rounds = 0
-
     from services.mouse_action import _move_mouse_curve
     from services.parse_bulk_route import bulk_route_parser_worker
+    from services.scroll_antibot import smooth_wheel_scroll
 
-    # Vị trí ban đầu của chuột (góc trên trái an toàn)
-    cur_x, cur_y = 100.0, 300.0
-
-    # Theo dõi href đã hover để bỏ qua giữa các round
+    total_hovered = 0
+    total_rounds = 0
     seen_hrefs: set[str] = set()
 
-    for round_i in range(scroll_rounds):
-        total_rounds += 1
+    # ── Global response listener (push model, không block hover loop) ────────
+    # Mỗi khi FB gửi bulk-route-definitions, callback này được gọi ngay lập tức
+    # mà không làm dừng vòng hover bên dưới.
+    _pending_hrefs: list[str] = []  # href của card vừa hover gần nhất
 
-        # Dùng JS tìm tất cả user card trong viewport (trả về tọa độ trực tiếp)
+    async def _on_bulk_response(response):
+        """Xử lý response bulk-route-definitions khi nhận được."""
+        if "bulk-route-definitions/" not in response.url:
+            return
         try:
-            cards: list[dict] = await page.evaluate(FIND_CARDS_JS)
+            raw_text = await response.text()
+            is_entity = bulk_route_parser_worker(raw_text)
+            if not is_entity or discovery_entity is None:
+                return
+            # Lấy href mới nhất của card đang hover (best-effort mapping)
+            href = _pending_hrefs[-1] if _pending_hrefs else ""
+            if href and not href.endswith("facebook.com/"):
+                # Tránh thêm trùng
+                known = {e["entity_url"] for e in discovery_entity}
+                if href not in known:
+                    # Tìm metadata card tương ứng
+                    name = None
+                    image_url = None
+                    for _card_meta in _card_meta_map.values():
+                        if _card_meta["href"] == href:
+                            name = _card_meta.get("name")
+                            image_url = _card_meta.get("image_url")
+                            break
+                    discovery_entity.append(
+                        {"entity_url": href, "name": name, "image_url": image_url}
+                    )
+                    logger.info(f"[hover_users] ✅ Entity: {href}")
         except Exception as e:
-            logger.warning(f"[hover_users] Lỗi khi chạy FIND_CARDS_JS: {e}")
-            cards = []
+            logger.debug(f"[hover_users] Lỗi xử lý bulk response: {e}")
 
-        # Chỉ lấy card trong viewport VÀ chưa hover lần nào
-        in_viewport_cards = [
-            c for c in cards
-            if c.get("in_viewport") and c.get("href") not in seen_hrefs
-        ]
-        logger.info(
-            f"[hover_users] Round {round_i+1}: {len(in_viewport_cards)} card mới trong viewport "
-            f"(đã bỏ qua {len(cards) - len(in_viewport_cards)} card trùng/ngoài viewport)"
-        )
+    # Map href → metadata card để callback tra cứu
+    _card_meta_map: dict[str, dict] = {}
 
-        for card in in_viewport_cards:
-            href = card.get("href", "")
-            seen_hrefs.add(href)
+    page.on("response", _on_bulk_response)
+
+    try:
+        cur_x, cur_y = 100.0, 300.0
+
+        for round_i in range(scroll_rounds):
+            total_rounds += 1
+
             try:
-                target_x = card["x"] + random.uniform(-5, 5)
-                target_y = card["y"] + random.uniform(-3, 3)
+                cards: list[dict] = await page.evaluate(FIND_CARDS_JS)
+            except Exception as e:
+                logger.warning(f"[hover_users] Lỗi FIND_CARDS_JS: {e}")
+                cards = []
 
-                # Timeout ngắn hơn — chỉ đủ để FB kích hoạt API sau khi hover
-                wait_ms = hover_delay_ms + random.randint(-100, 150)
+            in_viewport_cards = [
+                c
+                for c in cards
+                if c.get("in_viewport") and c.get("href") not in seen_hrefs
+            ]
+            logger.info(
+                f"[hover_users] Round {round_i+1}: {len(in_viewport_cards)} card mới "
+                f"(bỏ qua {len(cards) - len(in_viewport_cards)} trùng/ngoài viewport)"
+            )
 
-                # Di chuyển chuột trước (nhanh hơn, ít bước hơn)
-                await _move_mouse_curve(
-                    page=page,
-                    start_x=cur_x,
-                    start_y=cur_y,
-                    end_x=target_x,
-                    end_y=target_y,
-                    total_time_ms=random.uniform(180, 350),  # Giảm từ 300-600 → 180-350ms
-                    steps=random.randint(5, 10),              # Giảm từ 8-18 → 5-10 bước
-                    jitter_scale=0.5,
-                )
-                cur_x, cur_y = target_x, target_y
+            for card in in_viewport_cards:
+                href = card.get("href", "")
+                seen_hrefs.add(href)
+                _card_meta_map[href] = card  # lưu metadata để callback dùng
 
-                # Lắng nghe response bulk-route-definitions
                 try:
-                    async with page.expect_response(
-                        lambda r: "bulk-route-definitions/" in r.url,
-                        timeout=wait_ms,
-                    ) as bulk_resp_info:
-                        await page.wait_for_timeout(wait_ms)
+                    target_x = card["x"] + random.uniform(-5, 5)
+                    target_y = card["y"] + random.uniform(-3, 3)
 
-                    # Bắt được response → xử lý
-                    bulk_resp = await bulk_resp_info.value
-                    raw_text = await bulk_resp.text()
+                    # ── Di chuyển chuột: dùng Bezier curve ngắn ─────────────
+                    await _move_mouse_curve(
+                        page=page,
+                        start_x=cur_x,
+                        start_y=cur_y,
+                        end_x=target_x,
+                        end_y=target_y,
+                        total_time_ms=random.uniform(
+                            120, 250
+                        ),  # nhanh hơn v1 (180-350)
+                        steps=random.randint(4, 8),  # ít bước hơn v1 (5-10)
+                        jitter_scale=0.4,
+                    )
+                    cur_x, cur_y = target_x, target_y
 
-                    is_entity = bulk_route_parser_worker(raw_text)
-                    if is_entity and discovery_entity is not None:
-                        logger.info(f"[hover_users] Entity tìm thấy: {href}")
-                        if href and not href.endswith("facebook.com/"):
-                            discovery_entity.append(
-                                {
-                                    "entity_url": href,
-                                    "name": card.get("name"),
-                                    "image_url": card.get("image_url"),
-                                }
-                            )
+                    # Ghi nhận href để callback map response đúng card
+                    _pending_hrefs.append(href)
+                    if len(_pending_hrefs) > 5:
+                        _pending_hrefs.pop(0)  # giữ window 5 href gần nhất
 
+                    # ── Chờ ngắn — không block cả 1200ms nếu không có response ─
+                    # Thay vì expect_response (block hết timeout), chỉ wait đủ để
+                    # FB kịp gửi hover event, response được bắt bởi global listener.
+                    wait_ms = hover_delay_ms + random.randint(-100, 100)
+                    await page.wait_for_timeout(wait_ms)
+
+                    total_hovered += 1
                 except Exception:
-                    # Timeout — không wait thêm, chuyển card tiếp theo ngay
                     pass
 
-                total_hovered += 1
-            except Exception:
-                pass
+            # ── Scroll xuống batch tiếp theo ─────────────────────────────────
+            scroll_y_before = await page.evaluate("() => window.scrollY")
+            await smooth_wheel_scroll(page, distance=500, min_steps=6, max_steps=14)
+            # Chờ lazy-load sau scroll (giảm từ không chờ → 800ms cố định)
+            await page.wait_for_timeout(random.randint(700, 1000))
+            scroll_y_after = await page.evaluate("() => window.scrollY")
 
-        # Cuộn xuống để load batch tiếp theo — kiểm tra đáy trước
-        from services.scroll_antibot import smooth_wheel_scroll
+            if scroll_y_after <= scroll_y_before:
+                logger.info(
+                    f"[hover_users] Đã chạm đáy sau round {round_i+1}/{scroll_rounds}. Dừng sớm."
+                )
+                break
 
-        scroll_y_before = await page.evaluate("() => window.scrollY")
-        await smooth_wheel_scroll(page, distance=500, min_steps=6, max_steps=14)
-        scroll_y_after = await page.evaluate("() => window.scrollY")
-
-        if scroll_y_after <= scroll_y_before:
-            logger.info(
-                f"[hover_users] Đã chạm đáy trang sau round {round_i+1}/{scroll_rounds}. Dừng sớm."
-            )
-            break
+    finally:
+        # Luôn gỡ listener dù có lỗi hay không
+        page.remove_listener("response", _on_bulk_response)
 
     await _scroll_to_top(page)
 
@@ -331,7 +375,6 @@ async def _hover_users(
         "total_hovered": total_hovered,
         "rounds": total_rounds,
     }
-
 
 
 # ---------------------------------------------------------------------------
@@ -344,109 +387,109 @@ ACTION_REGISTRY: dict[str, dict[str, Any]] = {
         "handler": _click,
         "schema": {
             "name": "click",
-            "description": "Click vào một phần tử trên trang (button, link, tab, …).",
+            "description": "Click vào phần tử (button, link, tab).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "element_id": {
                         "type": "string",
-                        "description": "data-agent-id của phần tử cần click (ví dụ: 'a42').",
+                        "description": "data-agent-id của phần tử (vd: 'a42').",
                     }
                 },
                 "required": ["element_id"],
             },
         },
     },
-    "scroll_to_top": {
-        "handler": _scroll_to_top,
-        "schema": {
-            "name": "scroll_to_top",
-            "description": (
-                "Cuộn ngay về đầu trang (top). "
-                "PHẢI gọi action này trước khi click sang tab tiếp theo, "
-                "để thanh điều hướng (tab bar) hiện trở lại trong viewport."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        },
-    },
+    # "scroll_to_top": {
+    #     "handler": _scroll_to_top,
+    #     "schema": {
+    #         "name": "scroll_to_top",
+    #         "description": (
+    #             "Cuộn ngay về đầu trang (top). "
+    #             "PHẢI gọi action này trước khi click sang tab tiếp theo, "
+    #             "để thanh điều hướng (tab bar) hiện trở lại trong viewport."
+    #         ),
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {},
+    #             "required": [],
+    #         },
+    #     },
+    # },
     "scroll": {
         "handler": _scroll,
         "schema": {
             "name": "scroll",
-            "description": "Cuộn trang để kích hoạt lazy-load và API response.",
+            "description": "Cuộn trang kích hoạt lazy-load.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "direction": {
                         "type": "string",
                         "enum": ["down", "up"],
-                        "description": "Hướng cuộn. Mặc định: down.",
+                        "description": "Hướng cuộn (mặc định: down).",
                     },
                     "times": {
                         "type": "integer",
-                        "description": "Số lần cuộn. Mặc định: 3.",
+                        "description": "Số lần cuộn (mặc định: 3).",
                     },
                 },
                 "required": [],
             },
         },
     },
-    "scroll_short": {
-        "handler": _scroll_short,
-        "schema": {
-            "name": "scroll_short",
-            "description": "Cuộn trang một đoạn NGẮN (khoảng 400px) để quan sát từ từ. Dùng tool này khi bạn đang tìm kiếm các nút bấm hoặc menu phụ để screenshot cập nhật mà không bị lướt qua mất chúng.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "direction": {
-                        "type": "string",
-                        "enum": ["down", "up"],
-                        "description": "Hướng cuộn. Mặc định: down.",
-                    }
-                },
-                "required": [],
-            },
-        },
-    },
-    "hover_users": {
-        "handler": _hover_users,
-        "schema": {
-            "name": "hover_users",
-            "description": (
-                "Hover chuột lần lượt qua từng thẻ người dùng trong trang Bạn bè / Thành viên / Mọi người. "
-                "Mỗi lần hover kích hoạt API thu thập thông tin user. "
-                "PHẢI gọi ngay sau khi vừa click vào tab Bạn bè / Thành viên / Mọi người."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "scroll_rounds": {
-                        "type": "integer",
-                        "description": "Số lượt cuộn và hover (mỗi lượt xử lý 1 batch user card). Mặc định: 5.",
-                    },
-                    "hover_delay_ms": {
-                        "type": "integer",
-                        "description": "Thời gian hover trên mỗi user (ms). Mặc định: 1200.",
-                    },
-                },
-                "required": [],
-            },
-        },
-    },
+    # "scroll_short": {
+    #     "handler": _scroll_short,
+    #     "schema": {
+    #         "name": "scroll_short",
+    #         "description": "Cuộn trang một đoạn NGẮN (khoảng 400px) để quan sát từ từ. Dùng tool này khi bạn đang tìm kiếm các nút bấm hoặc menu phụ để screenshot cập nhật mà không bị lướt qua mất chúng.",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "direction": {
+    #                     "type": "string",
+    #                     "enum": ["down", "up"],
+    #                     "description": "Hướng cuộn. Mặc định: down.",
+    #                 }
+    #             },
+    #             "required": [],
+    #         },
+    #     },
+    # },
+    # "hover_users": {
+    #     "handler": _hover_users,
+    #     "schema": {
+    #         "name": "hover_users",
+    #         "description": (
+    #             "Hover chuột lần lượt qua từng thẻ người dùng trong trang Bạn bè / Thành viên / Mọi người. "
+    #             "Mỗi lần hover kích hoạt API thu thập thông tin user. "
+    #             "PHẢI gọi ngay sau khi vừa click vào tab Bạn bè / Thành viên / Mọi người."
+    #         ),
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "scroll_rounds": {
+    #                     "type": "integer",
+    #                     "description": "Số lượt cuộn và hover (mỗi lượt xử lý 1 batch user card). Mặc định: 5.",
+    #                 },
+    #                 "hover_delay_ms": {
+    #                     "type": "integer",
+    #                     "description": "Thời gian hover trên mỗi user (ms). Mặc định: 1200.",
+    #                 },
+    #             },
+    #             "required": [],
+    #         },
+    #     },
+    # },
     "navigate": {
         "handler": _navigate,
         "schema": {
             "name": "navigate",
-            "description": "Chuyển hướng tới một URL mới.",
+            "description": "Chuyển tới URL mới.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "URL đích (đầy đủ)."},
+                    "url": {"type": "string", "description": "URL đích."},
                 },
                 "required": ["url"],
             },
@@ -456,13 +499,13 @@ ACTION_REGISTRY: dict[str, dict[str, Any]] = {
         "handler": _wait,
         "schema": {
             "name": "wait",
-            "description": "Chờ một khoảng thời gian (ms) để trang render hoặc API trả về.",
+            "description": "Chờ (ms) để trang render / API trả về.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "ms": {
                         "type": "integer",
-                        "description": "Thời gian chờ tính bằng millisecond.",
+                        "description": "Millisecond cần chờ.",
                     },
                 },
                 "required": ["ms"],
@@ -473,20 +516,32 @@ ACTION_REGISTRY: dict[str, dict[str, Any]] = {
         "handler": _extract_data,
         "schema": {
             "name": "extract_data",
-            "description": "Ghi nhận dữ liệu quan trọng tìm thấy trên trang (như tên, tiểu sử, thông tin liên hệ).",
+            "description": "Ghi dữ liệu tìm thấy. Một mục: dùng label+content. Nhiều mục: dùng data array.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "label": {
                         "type": "string",
-                        "description": "Tên loại thông tin (ví dụ: 'Tiểu sử', 'Tên đầy đủ').",
+                        "description": "Tên thông tin (1 mục lẻ).",
                     },
                     "content": {
                         "type": "string",
-                        "description": "Nội dung dữ liệu trích xuất được.",
+                        "description": "Nội dung (1 mục lẻ).",
+                    },
+                    "data": {
+                        "type": "array",
+                        "description": "Nhiều mục: [{label, content}, ...]",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                            "required": ["label", "content"],
+                        },
                     },
                 },
-                "required": ["label", "content"],
+                "required": [],
             },
         },
     },
@@ -494,10 +549,7 @@ ACTION_REGISTRY: dict[str, dict[str, Any]] = {
         "handler": _ask_user,
         "schema": {
             "name": "ask_user",
-            "description": (
-                "Dừng lại và hỏi người dùng khi gặp captcha, xác minh 2 bước, "
-                "hoặc bất kỳ tình huống rủi ro nào cần can thiệp của người."
-            ),
+            "description": "Dừng và yêu cầu can thiệp (captcha, xác minh 2 bước, rủi ro).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -514,13 +566,13 @@ ACTION_REGISTRY: dict[str, dict[str, Any]] = {
         "handler": _done,
         "schema": {
             "name": "done",
-            "description": "Kết thúc nhiệm vụ khi đã duyệt xong tất cả các tab có thể truy cập.",
+            "description": "Kết thúc sau khi duyệt xong các tab.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "summary": {
                         "type": "string",
-                        "description": "Tóm tắt ngắn gọn: đã click tab nào, scroll bao nhiêu lần.",
+                        "description": "Tóm tắt ngắn: tab nào đã thực hiện.",
                     },
                 },
                 "required": ["summary"],

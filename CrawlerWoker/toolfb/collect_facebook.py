@@ -7,6 +7,7 @@ cần click tab nào, scroll ở đâu để lấy hết thông tin.
 Không cần biết trước URL là loại gì — agent tự nhận diện qua ảnh.
 """
 
+import json
 import logging
 import os
 from playwright.async_api import Page
@@ -18,108 +19,36 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ── Prompt kết hợp điều hướng và trích xuất dữ liệu (CỰC KỲ NGHIÊM NGẶT) ──────────────────────────
+# ── Prompt điều hướng và trích xuất dữ liệu ─────────────────────────────────
 _TASK_TEMPLATE = """
-Bạn đang ở URL Facebook: {url}
-Nhìn vào screenshot để xác định đây là **Profile cá nhân**, **Group**, hay **Page**.
-Thực hiện đúng quy trình tương ứng bên dưới.
+URL: {url}
+Xác định loại trang qua screenshot: Profile, Group, hay Page.
 
----
+QUY TẮC CHUNG (bắt buộc):
+- Mỗi tab thực hiện ĐÚNG 1 LẦN theo thứ tự, KHÔNG quay lại.
+- extract_data CHỈ dùng trong tab Giới thiệu. TUYỆT ĐỐI không gọi ở tab khác.
+- Không join group, kết bạn, nhắn tin.
+- Captcha/xác minh → ask_user ngay.
+- Bỏ qua các tab: Reels, Sự kiện, Đáng chú ý, Checkin, Bài đánh giá, Xem thêm.
+- Không phải profile/group/page → done ngay.
 
-## 🔴 QUY TẮC CHUNG (áp dụng cho mọi loại)
-- KHÔNG join group, KHÔNG kết bạn, KHÔNG gửi tin nhắn.
-- Gặp captcha hoặc xác minh → gọi `ask_user` ngay.
-- Không click lại tab đã click rồi.
-- Đã duyệt hết tab → gọi `done` kèm tóm tắt, không cần chờ hết bước.
-- Click lỗi hoặc không thấy tab → bỏ qua, chuyển tab tiếp theo luôn.
-- Các tab BỎ QUA (không click): `Reels`, `Sự kiện`, `Đáng chú ý`, `Checkin`, `Bài đánh giá`, `Xem thêm`.
-- `scroll` và `hover_users` tự động cuộn về đầu trang khi xong — KHÔNG cần gọi `scroll_to_top` sau các action này.
+PROFILE / PAGE — Thứ tự: Tất cả → Giới thiệu → Bạn bè (Page: Người theo dõi) → Ảnh (Page: bỏ) → done
+[1] Tất cả: Scroll 30 lần, KHÔNG extract_data.
+[2] Giới thiệu: Click tab → extract_data header (Tên, bạn bè, theo dõi) → click từng menu phụ (Tổng quan, Công việc, Nơi sống, Liên hệ...) → ghi nhận nội dung mỗi menu → KHÔNG scroll.
+[3] Bạn bè/Người theo dõi: Click tab → hệ thống tự thu thập.
+[4] Ảnh (Profile only): Click tab → hệ thống tự thu thập → done.
 
----
-
-## 👤 PROFILE CÁ NHÂN
-
-**Thứ tự ưu tiên:** Giới thiệu → Bạn bè → Ảnh → Tất cả → dừng.
-
-**Tab "Giới thiệu":**
-- Click từng menu phụ: `Tổng quan`, `Công việc và học vấn`, `Nơi từng sống`, `Thông tin liên hệ`, `Chi tiết trang`...
-- Tại MỖI menu phụ: đọc màn hình → gọi `extract_data` ngay với từng khối thông tin thấy được → scroll, hệ thống tự cuộn về đầu trang, sau đó click menu phụ tiếp theo.
-- KHÔNG được chuyển sang menu phụ khác nếu chưa `extract_data` hết thông tin đang hiển thị.
-
-**Tab "Bạn bè":**
-- Gọi `hover_users` ngay sau khi click vào tab.
-- `hover_users` tự động thu thập URL bạn bè và cuộn về đầu trang khi xong.
-- Chuyển sang tab tiếp theo luôn.
-
-**Tab "Ảnh":**
-- Click vào tab → hệ thống tự động thu thập ảnh và cuộn về đầu trang khi xong.
-- Chuyển sang tab tiếp theo luôn.
-
-**Tab "Tất cả":**
-- KHÔNG extract_data dù thấy thông tin cá nhân.
-- Scroll 10 lần để thu bài viết qua API, hệ thống tự cuộn về đầu trang khi xong.
-- Chuyển sang tab tiếp theo luôn.
-
----
-## 👥 GROUP
-**Thứ tự ưu tiên:** Giới thiệu → Thảo luận → Thành viên → dừng.
-**KHÔNG click:** Ảnh, Video, File, Media.
-
-**Tab "Giới thiệu":**
-- Click từng menu phụ nếu có.
-- Tại MỖI menu phụ: đọc màn hình → gọi `extract_data` ngay với từng khối thông tin thấy được (mô tả, quy tắc, số thành viên...) → scroll, hệ thống tự cuộn về đầu trang, sau đó click menu phụ tiếp theo.
-- KHÔNG được chuyển sang menu phụ khác nếu chưa `extract_data` hết thông tin đang hiển thị.
-
-**Tab "Thảo luận":**
-- KHÔNG extract_data.
-- Scroll 20 lần để thu bài viết qua API, hệ thống tự cuộn về đầu trang khi xong.
-- Chuyển sang tab tiếp theo luôn.
-
-**Tab "Thành viên" / "Mọi người":**
-- Gọi `hover_users` ngay sau khi click vào tab.
-- `hover_users` tự động thu thập URL thành viên và cuộn về đầu trang khi xong.
-- Chuyển sang tab tiếp theo luôn.
-
----
-## 📄 PAGE
-
-**Thứ tự ưu tiên:** Giới thiệu → Người theo dõi → Tất cả → dừng.
-**KHÔNG click:** Ảnh, Video, File, Media, Reels.
-
-**Tab "Giới thiệu":**
-- Click từng menu phụ nếu có.
-- Tại MỖI menu phụ: đọc màn hình → gọi `extract_data` ngay với từng khối thông tin thấy được → scroll, hệ thống tự cuộn về đầu trang, sau đó click menu phụ tiếp theo.
-- KHÔNG được chuyển sang menu phụ khác nếu chưa `extract_data` hết thông tin đang hiển thị.
-
-**Tab "Người theo dõi" / "Follower":**
-- Gọi `hover_users` ngay sau khi click vào tab.
-- `hover_users` tự động thu thập URL người theo dõi và cuộn về đầu trang khi xong.
-- Chuyển sang tab tiếp theo luôn.
-
-**Tab "Tất cả":**
-- KHÔNG extract_data dù thấy thông tin.
-- Scroll 20 lần để thu bài viết qua API, hệ thống tự cuộn về đầu trang khi xong.
-- Chuyển sang tab tiếp theo luôn.
-
----
-
-## 📋 QUY TẮC EXTRACT_DATA
-- Chỉ gọi `extract_data` khi đang ở tab **Giới thiệu** (mọi loại).
-- Mỗi khối thông tin = 1 lần gọi `extract_data`. Ví dụ: label="Giáo dục", content="Học viện Công nghệ Bưu chính Viễn thông...".
-- KHÔNG gọi `extract_data` khi đang ở tab Tất cả, Thảo luận, Bạn bè, Thành viên, Người theo dõi, Ảnh.
----
-
-## 🔄 CHU TRÌNH CHUẨN TẠI MỖI TAB
-1. Click tab/menu phụ → `wait` 1000ms.
-2. Thực hiện đúng hành động của tab đó (scroll / hover_users / extract_data...).
-3. Hệ thống tự cuộn về đầu trang — chuyển sang tab tiếp theo luôn.
+GROUP — Thứ tự: Thảo luận → Giới thiệu → Thành viên/Mọi người → done
+[1] Thảo luận: Scroll 30 lần, KHÔNG extract_data.
+[2] Giới thiệu: Click tab → extract_data (tên, thành viên, mô tả, quy tắc...) → scroll nhẹ 2 lần → ghi nhận phần còn lại.
+[3] Thành viên/Mọi người: Click tab → hệ thống tự thu thập.
 """.strip()
 
 
 async def collect_facebook(
     url: str,
     browser: "BrowserManager",
-    max_steps: int = 25,
+    max_steps: int = 20,
 ) -> dict:
     """
     Thu thập thông tin từ một URL Facebook bất kỳ (profile / group / page).

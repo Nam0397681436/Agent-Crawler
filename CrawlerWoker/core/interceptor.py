@@ -50,6 +50,7 @@ class Interceptor:
         # Không bắn vào kafka nếu content_type là image, video (khi biến is_media là True)
         # Tạm thời chỉ bắn api có url bắt đầu bằng https://web.facebook.com/api/graphql/
         if not is_media and "/api/graphql/" in url:
+            data = None
             try:
                 data = await response.text()
             except Exception:

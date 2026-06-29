@@ -31,7 +31,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Đổi URL tại đây hoặc truyền qua dòng lệnh ───────────────────────────────
-DEFAULT_URL = "https://web.facebook.com/nhoangtan20"
+# DEFAULT_URL = "https://web.facebook.com/lam.anh.220295/"
+DEFAULT_URL = "https://web.facebook.com/PageWSS"
 
 
 async def discovery_tree(
@@ -58,6 +59,7 @@ async def discovery_tree(
         logger.info(f"[discovery_tree] (Deep {deep}) Tiến hành thu thập URL: {url}")
 
         try:
+            await browser.rotate_proxy_if_needed()
             result = await collect_facebook(url=url, browser=browser)
             all_results.append(result)
 
