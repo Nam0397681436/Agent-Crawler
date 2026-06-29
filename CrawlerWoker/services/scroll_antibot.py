@@ -6,11 +6,11 @@ from playwright.async_api import Page
 
 async def smart_scroll_for_api(
     page: Page,
-    max_scroll_loops: int = 20,
-    chunk_distance: int = 2000,
-    min_wait_ms: int = 500,
-    max_wait_ms: int = 700,
-    stable_limit: int = 3,
+    max_scroll_loops: int = 50,
+    chunk_distance: int = 1500,
+    min_wait_ms: int = 1000,
+    max_wait_ms: int = 1500,
+    stable_limit: int = 5,
     bottom_threshold_px: int = 500,
     debug: bool = True,
 ) -> Dict[str, Any]:
@@ -58,12 +58,31 @@ async def smart_scroll_for_api(
         distance_to_bottom = scroll_height - current_position
 
         if distance_to_bottom <= bottom_threshold_px:
-            report["stopped_reason"] = "bottom_reached"
-
+            # Với infinite-scroll (Facebook home/feed), trang sẽ load thêm
+            # nội dung khi gần đáy. Chờ lazy-load rồi recheck trước khi dừng.
             if debug:
-                print(f"✅ Đã gần chạm đáy trang ở loop={loop_index}. Dừng.")
-
-            break
+                print(
+                    f"⏳ Gần đáy (distance={distance_to_bottom}px), "
+                    f"chờ lazy-load..."
+                )
+            await page.wait_for_timeout(random.randint(2000, 3000))
+            after_wait = await _get_scroll_metrics(page)
+            if after_wait["scroll_height"] > scroll_height:
+                # Trang đã load thêm — reset stable_rounds và tiếp tục
+                if debug:
+                    print(
+                        f"✅ Lazy-load thành công: "
+                        f"{scroll_height} → {after_wait['scroll_height']}px. Tiếp tục."
+                    )
+                last_height = after_wait["scroll_height"]
+                stable_rounds = 0
+                continue
+            else:
+                # Trang thật sự đã hết nội dung
+                report["stopped_reason"] = "bottom_reached"
+                if debug:
+                    print(f"✅ Đã chạm đáy thật ở loop={loop_index}. Dừng.")
+                break
 
         distance = min(chunk_distance, max(300, distance_to_bottom))
 
@@ -127,7 +146,11 @@ async def smart_scroll_for_api(
                 else:
                     print("⚠️ Fallback window.scrollBy vẫn không làm trang di chuyển.")
 
-        if not height_changed:
+        # Facebook dùng virtual DOM: scrollHeight có thể không đổi dù trang
+        # vẫn đang scroll bình thường (xóa post cũ, thêm post mới).
+        # Dùng `moved` (scrollY di chuyển) thay vì `height_changed` —
+        # chỉ dừng khi trang thật sự không scroll được nữa.
+        if not moved:
             stable_rounds += 1
         else:
             stable_rounds = 0
@@ -145,10 +168,10 @@ async def smart_scroll_for_api(
         last_scroll_y = after["scroll_y"]
 
         if stable_rounds >= stable_limit:
-            report["stopped_reason"] = "stable_no_height_change"
+            report["stopped_reason"] = "stable_scroll_y_stuck"
 
             if debug:
-                print(f"🛑 scrollHeight không tăng sau {stable_rounds} vòng. Dừng.")
+                print(f"🛑 scrollY không di chuyển sau {stable_rounds} vòng liên tiếp. Dừng.")
 
             break
 

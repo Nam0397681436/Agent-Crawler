@@ -31,8 +31,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Đổi URL tại đây hoặc truyền qua dòng lệnh ───────────────────────────────
-# DEFAULT_URL = "https://web.facebook.com/lam.anh.220295/"
-DEFAULT_URL = "https://web.facebook.com/PageWSS"
+DEFAULT_URL = "https://web.facebook.com/lam.anh.220295/"
+# DEFAULT_URL = "https://web.facebook.com/PageWSS"
 
 
 async def discovery_tree(

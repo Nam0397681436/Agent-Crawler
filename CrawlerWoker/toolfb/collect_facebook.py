@@ -11,7 +11,7 @@ import json
 import logging
 import os
 from playwright.async_api import Page
-from core.agent import FacebookAgent
+from core.fb_crawler import FacebookCrawler
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -82,12 +82,8 @@ async def collect_facebook(
 
         # Giao cho agent tự nhìn screenshot và quyết định
         task_prompt = _TASK_TEMPLATE.format(url=url)
-        agent = FacebookAgent(
-            task=task_prompt,
-            max_steps=max_steps,
-            model=os.getenv("AGENT_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o")),
-        )
-        result = await agent.run(page)
+        fb_crawler = FacebookCrawler()
+        result = await fb_crawler.run_user_profile(page)
 
         status = (
             "needs_user" if "[Cần can thiệp]" in result.get("summary", "") else "ok"
@@ -111,9 +107,9 @@ async def collect_facebook(
             result = {
                 "url": url,
                 "status": "interrupted",
-                "extracted_data": agent.extracted_data if agent else [],
+                "extracted_data": fb_crawler.extracted_data if fb_crawler else [],
                 "discovery_entity_ralationship": (
-                    agent.discovery_entity if agent else []
+                    fb_crawler.discovery_entity if fb_crawler else []
                 ),
                 "summary": "Bị gián đoạn do lỗi hoặc người dùng ngắt (Ctrl+C)",
                 "error": str(e),

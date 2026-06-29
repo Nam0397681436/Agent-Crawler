@@ -23,11 +23,6 @@ from services.scroll_antibot import smart_scroll_for_api
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Các hàm thực thi
-# ---------------------------------------------------------------------------
-
-
 async def _click(page: Page, element_id: str, **_) -> dict:
     """Click vào phần tử có data-agent-id = element_id."""
     locator = page.locator(f"[data-agent-id='{element_id}']")
@@ -68,10 +63,26 @@ async def _type_text(page: Page, element_id: str, text: str, **_) -> dict:
         return {"status": "error", "action": "type_text", "error": str(e)}
 
 
-async def _scroll(page: Page, direction: str = "down", times: int = 3, **_) -> dict:
-    """Cuộn trang (anti-bot aware scroll)."""
+async def _scroll(
+    page: Page,
+    direction: str = "down",
+    times: int = 3,
+    scroll_rounds: int = 0,
+    min_wait_ms: int = 1500,
+    max_wait_ms: int = 3000,
+    **_,
+) -> dict:
+    """Cuộn trang (anti-bot aware scroll). scroll_rounds là alias của times."""
+    loops = scroll_rounds or times  # scroll_rounds ưu tiên nếu được truyền vào
     try:
-        await smart_scroll_for_api(page, max_scroll_loops=times, debug=False)
+        await smart_scroll_for_api(
+            page,
+            max_scroll_loops=loops,
+            min_wait_ms=min_wait_ms,
+            max_wait_ms=max_wait_ms,
+            debug=False,
+        )
+
         await _scroll_to_top(page)
         return {
             "status": "ok",
@@ -155,6 +166,40 @@ async def _extract_data(
         "content": content,
         "data": data or [],
     }
+
+
+async def _click_info_page_user(page: Page, **_) -> dict:
+    """
+    Trỏ vào thẻ div chỉ định, lấy tất cả thẻ span và click vào từng thẻ.
+    """
+    try:
+        selector = "div.x1qjc9v5.x78zum5.xdt5ytf.x3pnbk8 span"
+        spans = page.locator(selector)
+        count = await spans.count()
+
+        for i in range(count):
+            span_loc = spans.nth(i)
+            await human_like_click(
+                page=page,
+                locator=span_loc,
+                timeout_ms=5000,
+                debug=False,
+            )
+            # Chờ panel nội dung render sau click
+            try:
+                await page.wait_for_load_state("networkidle", timeout=3000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(random.randint(1800, 2800))
+
+        return {
+            "status": "ok",
+            "action": "click_info_page_user",
+            "clicked_count": count,
+        }
+    except Exception as e:
+        logger.error(f"[_extract_info] Lỗi: {e}")
+        return {"status": "error", "action": "extract_info", "error": str(e)}
 
 
 async def _ask_user(page: Page, question: str, **_) -> dict:
@@ -375,228 +420,3 @@ async def _hover_users(
         "total_hovered": total_hovered,
         "rounds": total_rounds,
     }
-
-
-# ---------------------------------------------------------------------------
-# Registry: ánh xạ tên action → (schema, handler)
-# ---------------------------------------------------------------------------
-# Thêm action mới: bổ sung một dict vào đây là xong.
-
-ACTION_REGISTRY: dict[str, dict[str, Any]] = {
-    "click": {
-        "handler": _click,
-        "schema": {
-            "name": "click",
-            "description": "Click vào phần tử (button, link, tab).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "element_id": {
-                        "type": "string",
-                        "description": "data-agent-id của phần tử (vd: 'a42').",
-                    }
-                },
-                "required": ["element_id"],
-            },
-        },
-    },
-    # "scroll_to_top": {
-    #     "handler": _scroll_to_top,
-    #     "schema": {
-    #         "name": "scroll_to_top",
-    #         "description": (
-    #             "Cuộn ngay về đầu trang (top). "
-    #             "PHẢI gọi action này trước khi click sang tab tiếp theo, "
-    #             "để thanh điều hướng (tab bar) hiện trở lại trong viewport."
-    #         ),
-    #         "parameters": {
-    #             "type": "object",
-    #             "properties": {},
-    #             "required": [],
-    #         },
-    #     },
-    # },
-    "scroll": {
-        "handler": _scroll,
-        "schema": {
-            "name": "scroll",
-            "description": "Cuộn trang kích hoạt lazy-load.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "direction": {
-                        "type": "string",
-                        "enum": ["down", "up"],
-                        "description": "Hướng cuộn (mặc định: down).",
-                    },
-                    "times": {
-                        "type": "integer",
-                        "description": "Số lần cuộn (mặc định: 3).",
-                    },
-                },
-                "required": [],
-            },
-        },
-    },
-    # "scroll_short": {
-    #     "handler": _scroll_short,
-    #     "schema": {
-    #         "name": "scroll_short",
-    #         "description": "Cuộn trang một đoạn NGẮN (khoảng 400px) để quan sát từ từ. Dùng tool này khi bạn đang tìm kiếm các nút bấm hoặc menu phụ để screenshot cập nhật mà không bị lướt qua mất chúng.",
-    #         "parameters": {
-    #             "type": "object",
-    #             "properties": {
-    #                 "direction": {
-    #                     "type": "string",
-    #                     "enum": ["down", "up"],
-    #                     "description": "Hướng cuộn. Mặc định: down.",
-    #                 }
-    #             },
-    #             "required": [],
-    #         },
-    #     },
-    # },
-    # "hover_users": {
-    #     "handler": _hover_users,
-    #     "schema": {
-    #         "name": "hover_users",
-    #         "description": (
-    #             "Hover chuột lần lượt qua từng thẻ người dùng trong trang Bạn bè / Thành viên / Mọi người. "
-    #             "Mỗi lần hover kích hoạt API thu thập thông tin user. "
-    #             "PHẢI gọi ngay sau khi vừa click vào tab Bạn bè / Thành viên / Mọi người."
-    #         ),
-    #         "parameters": {
-    #             "type": "object",
-    #             "properties": {
-    #                 "scroll_rounds": {
-    #                     "type": "integer",
-    #                     "description": "Số lượt cuộn và hover (mỗi lượt xử lý 1 batch user card). Mặc định: 5.",
-    #                 },
-    #                 "hover_delay_ms": {
-    #                     "type": "integer",
-    #                     "description": "Thời gian hover trên mỗi user (ms). Mặc định: 1200.",
-    #                 },
-    #             },
-    #             "required": [],
-    #         },
-    #     },
-    # },
-    "navigate": {
-        "handler": _navigate,
-        "schema": {
-            "name": "navigate",
-            "description": "Chuyển tới URL mới.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "URL đích."},
-                },
-                "required": ["url"],
-            },
-        },
-    },
-    "wait": {
-        "handler": _wait,
-        "schema": {
-            "name": "wait",
-            "description": "Chờ (ms) để trang render / API trả về.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "ms": {
-                        "type": "integer",
-                        "description": "Millisecond cần chờ.",
-                    },
-                },
-                "required": ["ms"],
-            },
-        },
-    },
-    "extract_data": {
-        "handler": _extract_data,
-        "schema": {
-            "name": "extract_data",
-            "description": "Ghi dữ liệu tìm thấy. Một mục: dùng label+content. Nhiều mục: dùng data array.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "label": {
-                        "type": "string",
-                        "description": "Tên thông tin (1 mục lẻ).",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Nội dung (1 mục lẻ).",
-                    },
-                    "data": {
-                        "type": "array",
-                        "description": "Nhiều mục: [{label, content}, ...]",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "label": {"type": "string"},
-                                "content": {"type": "string"},
-                            },
-                            "required": ["label", "content"],
-                        },
-                    },
-                },
-                "required": [],
-            },
-        },
-    },
-    "ask_user": {
-        "handler": _ask_user,
-        "schema": {
-            "name": "ask_user",
-            "description": "Dừng và yêu cầu can thiệp (captcha, xác minh 2 bước, rủi ro).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "question": {
-                        "type": "string",
-                        "description": "Mô tả tình huống cần người dùng xử lý.",
-                    },
-                },
-                "required": ["question"],
-            },
-        },
-    },
-    "done": {
-        "handler": _done,
-        "schema": {
-            "name": "done",
-            "description": "Kết thúc sau khi duyệt xong các tab.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "summary": {
-                        "type": "string",
-                        "description": "Tóm tắt ngắn: tab nào đã thực hiện.",
-                    },
-                },
-                "required": ["summary"],
-            },
-        },
-    },
-}
-
-
-def get_tool_schemas() -> list[dict]:
-    """Trả về list schema theo chuẩn OpenAI function calling."""
-    return [
-        {"type": "function", "function": entry["schema"]}
-        for entry in ACTION_REGISTRY.values()
-    ]
-
-
-async def execute(action_name: str, page: Page, params: dict) -> dict:
-    """Thực thi một action theo tên."""
-    entry = ACTION_REGISTRY.get(action_name)
-    if not entry:
-        return {"status": "error", "error": f"Action không tồn tại: {action_name}"}
-    try:
-        return await entry["handler"](page=page, **params)
-    except Exception as e:
-        logger.error(f"[actions] Lỗi thực thi '{action_name}': {e}")
-        return {"status": "error", "action": action_name, "error": str(e)}

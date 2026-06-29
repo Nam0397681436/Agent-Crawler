@@ -11,7 +11,7 @@ with open(
         os.path.dirname(os.path.abspath(__file__)),
         "..",
         "config",
-        "config-group-post.json",
+        "config-page-post.json",
     ),
     "r",
     encoding="utf-8",
@@ -21,14 +21,14 @@ with open(
 
 def main():
 
-    with open("test_post_group.json", "r", encoding="utf-8") as f:
+    with open("test_post_page.json", "r", encoding="utf-8") as f:
         raw_json = json.load(f)
 
     parsed_result = JsonPathParser.parse(
         raw_json=raw_json,
         config=CONFIG,
     )
-    with open("data_model_post_group.json", "w", encoding="utf-8") as f:
+    with open("data_model_post_page_2.json", "w", encoding="utf-8") as f:
         json.dump(parsed_result, f, indent=2, ensure_ascii=False)
 
 

@@ -66,4 +66,4 @@ class Interceptor:
                 "data": data,
             }
 
-            await self.kafka_publisher.publish(record)
+            # await self.kafka_publisher.publish(record)
