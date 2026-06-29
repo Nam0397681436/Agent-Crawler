@@ -182,7 +182,7 @@ async def _click_info_page_user(page: Page, **_) -> dict:
             await human_like_click(
                 page=page,
                 locator=span_loc,
-                timeout_ms=5000,
+                timeout_ms=1000,
                 debug=False,
             )
             # Chờ panel nội dung render sau click

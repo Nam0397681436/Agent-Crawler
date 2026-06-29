@@ -144,12 +144,12 @@ class FacebookCrawler:
                 await actions._scroll(page, scroll_rounds=2)
 
             elif label == "home":
-                await actions._scroll(page, scroll_rounds=30)
+                await actions._scroll(page, scroll_rounds=25)
 
             elif label == "friends":
                 await actions._hover_users(
                     page=page,
-                    scroll_rounds=20,
+                    scroll_rounds=15,
                     hover_delay_ms=500,
                     discovery_entity=self.discovery_entity,
                 )
