@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import urllib.parse
+import os
 from playwright.async_api import Response
 from model.factory_capture_api import FactoryRegexApi
 from services.publisher_kafka import KafkaPublisher
@@ -48,22 +50,38 @@ class Interceptor:
             return
 
         # Không bắn vào kafka nếu content_type là image, video (khi biến is_media là True)
-        # Tạm thời chỉ bắn api có url bắt đầu bằng https://web.facebook.com/api/graphql/
-        if not is_media and "/api/graphql/" in url:
+        # Tạm thời chỉ bắn api có url bắt đầu bằng https://web.facebook.com/api/graphql/ hoặc chứa about hoặc resource là document
+        skip_api_doc = ["/about", "/friends", "/photos", "/members"]
+        if (
+            not is_media
+            and ("/api/graphql/" in url or request.resource_type == "document")
+            and not any(skip in url for skip in skip_api_doc)
+        ):
             data = None
             try:
                 data = await response.text()
             except Exception:
                 logger.error(f"Failed to get response text from {url}")
 
+            parsed_url = urllib.parse.urlparse(url)
+            path = parsed_url.path
+            referer = request.headers.get("referer", "")
+
             record = {
                 "url": url,
+                "path": path,
+                "refer": referer,
                 "method": request.method,
                 "status": response.status,
                 "resource_type": request.resource_type,
                 "content_type": content_type,
-                "post_data": request.post_data,
+                # "post_data": request.post_data,
                 "data": data,
             }
 
-            await self.kafka_publisher.publish(record)
+            if "about" in url or request.resource_type == "document":
+                topic = os.getenv("TOPIC_INFO_ABOUT", "about_entity_info")
+            else:
+                topic = os.getenv("TOPIC_FB_CRAWL", "api_crawler_fb")
+
+            await self.kafka_publisher.publish(record, topic=topic)

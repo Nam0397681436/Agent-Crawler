@@ -4,12 +4,14 @@ import re
 class PatternFacebook:
     # 1. Các API rác, theo dõi hành vi -> BỎ QUA NGAY
     url_skip_facebook = [
+        r"^https?://(?:www\.|web\.)?facebook\.com/?$",
         r"facebook\.com/ajax/device/",
         r"facebook\.com/ajax/logger/",
         r"facebook\.com/ajax/ua/",
         r"facebook\.com/async/",
         r"facebook\.com/logging/",
         r"facebook\.com/tr/",
+        r"sound_iframe\.php",
         # Bỏ qua tất cả các file ảnh/âm thanh/video không phải là jpg/jpeg
         r"\.(png|webp|gif|svg|ico|bmp|tiff|avif|mp3|mp4|wav|ogg|webm|m4a|aac)(?:$|\?)",
     ]

@@ -85,7 +85,7 @@ class FacebookCrawler:
         """
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(random.randint(1500, 2500))  # buffer SPA render
+            await page.wait_for_timeout(random.randint(2000, 3000))  # buffer SPA render
         except Exception as e:
             logger.warning(f"[crawler] goto lỗi: {url} — {e}")
             return False
@@ -144,7 +144,7 @@ class FacebookCrawler:
                 await actions._scroll(page, scroll_rounds=2)
 
             elif label == "home":
-                await actions._scroll(page, scroll_rounds=25)
+                await actions._scroll(page, scroll_rounds=5)
 
             elif label == "friends":
                 await actions._hover_users(
