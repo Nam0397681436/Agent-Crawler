@@ -245,7 +245,6 @@ async def _hover_users(
     page: Page,
     scroll_rounds: int = 10,
     hover_delay_ms: int = 1000,  # Chờ đủ để FB kịp gửi bulk-route-definitions response
-    discovery_entity: list[dict] | None = None,
     on_bulk_response=None,  # async callable(raw_text: str) -> None
     **_,
 ) -> dict:
@@ -315,14 +314,19 @@ async def _hover_users(
     total_hovered = 0
     total_rounds = 0
     seen_hrefs: set[str] = set()
-
-    # ── Global response listener (push model, không block hover loop) ────────
-    # Mỗi khi FB gửi bulk-route-definitions, callback này được gọi ngay lập tức
-    # mà không làm dừng vòng hover bên dưới.
-    _pending_hrefs: list[str] = []  # href của card vừa hover gần nhất
+    # List nội bộ — chỉ chứa entity do HÀM NÀY tìm được, không dùng chung với bên ngoài
+    _found_entities: list[dict] = []
+    import asyncio
     import time
 
     start_time = time.perf_counter()
+
+    # ── Event báo hiệu response đã về cho card đang hover ────────────────────
+    # Thay vì wait cứng hover_delay_ms, ta chờ event này được set hoặc timeout.
+    # FB thường response trong 200-600ms, nhưng tối đa vẫn chờ hover_delay_ms.
+    _response_event = asyncio.Event()
+
+    _pending_hrefs: list[str] = []  # href của card vừa hover gần nhất
 
     async def _on_bulk_response(response):
         """Xử lý response bulk-route-definitions khi nhận được."""
@@ -331,13 +335,15 @@ async def _hover_users(
         try:
             raw_text = await response.text()
             is_entity = bulk_route_parser_worker(raw_text)
-            if not is_entity or discovery_entity is None:
+            if not is_entity:
+                # Báo hiệu response đã về dù không phải entity (tránh chờ thừa)
+                _response_event.set()
                 return
             # Lấy href mới nhất của card đang hover (best-effort mapping)
             href = _pending_hrefs[-1] if _pending_hrefs else ""
             if href and not href.endswith("facebook.com/"):
                 # Tránh thêm trùng
-                known = {e["entity_url"] for e in discovery_entity}
+                known = {e["entity_url"] for e in _found_entities}
                 if href not in known:
                     # Tìm metadata card tương ứng
                     name = None
@@ -347,12 +353,15 @@ async def _hover_users(
                             name = _card_meta.get("name")
                             image_url = _card_meta.get("image_url")
                             break
-                    discovery_entity.append(
+                    _found_entities.append(
                         {"entity_url": href, "name": name, "image_url": image_url}
                     )
                     logger.info(f"[hover_users] ✅ Entity: {href}")
+            # Báo hiệu cho hover loop: response đã về, không cần chờ thêm
+            _response_event.set()
         except Exception as e:
             logger.debug(f"[hover_users] Lỗi xử lý bulk response: {e}")
+            _response_event.set()  # Vẫn set để tránh block vô thời hạn
 
     # Map href → metadata card để callback tra cứu
     _card_meta_map: dict[str, dict] = {}
@@ -406,13 +415,22 @@ async def _hover_users(
                     cur_x, cur_y = target_x, target_y
 
                     # Ghi nhận href để callback map response đúng card
+                    _response_event.clear()  # Reset event trước khi hover
                     _pending_hrefs.append(href)
                     if len(_pending_hrefs) > 5:
                         _pending_hrefs.pop(0)  # giữ window 5 href gần nhất
 
-                    # Chờ đủ để FB kịp gửi bulk-route-definitions response sau hover.
-                    # Nếu quá nhanh → response chưa về, bỏ lỡ entity.
-                    await page.wait_for_timeout(hover_delay_ms)
+                    # ── Chờ thông minh: dừng ngay khi FB response về ──────────
+                    # Không chờ cứng hover_delay_ms — FB thường response trong
+                    # 200-600ms. Nếu response về sớm → chuyển card ngay lập tức.
+                    # Nếu không có response → timeout sau hover_delay_ms (giữ an toàn).
+                    try:
+                        await asyncio.wait_for(
+                            _response_event.wait(),
+                            timeout=hover_delay_ms / 1000,
+                        )
+                    except asyncio.TimeoutError:
+                        pass  # Không có response → chuyển sang card tiếp theo
 
                     total_hovered += 1
                 except Exception:
@@ -420,7 +438,7 @@ async def _hover_users(
 
             # ── Scroll xuống batch tiếp theo ─────────────────────────────────
             scroll_y_before = await page.evaluate("() => window.scrollY")
-            await smooth_wheel_scroll(page, distance=500, min_steps=6, max_steps=14)
+            await smooth_wheel_scroll(page, distance=800, min_steps=5, max_steps=10)
             # Chờ lazy-load sau scroll (giảm từ không chờ → 800ms cố định)
             await page.wait_for_timeout(random.randint(700, 1000))
             scroll_y_after = await page.evaluate("() => window.scrollY")
@@ -441,8 +459,8 @@ async def _hover_users(
         "status": "ok",
         "action": "hover_users",
         "total_hovered": total_hovered,
-        "total_user_extract": len(discovery_entity),
-        "discovery_entity": discovery_entity,
+        "total_user_extract": len(_found_entities),
+        "discovery_entity": _found_entities,
         "rounds": total_rounds,
         "time_crawl": time.perf_counter() - start_time,
     }
@@ -568,13 +586,11 @@ async def extract_user_reaction_posts(
                             await page.mouse.move(hover_x, hover_y)
                             await page.wait_for_timeout(random.randint(300, 500))
 
-                            await smart_scroll_for_api(
-                                page,
-                                max_scroll_loops=6,
-                                chunk_distance=500,
-                                min_wait_ms=500,
-                                max_wait_ms=1000,
-                            )
+                            for _ in range(6):
+                                await smooth_wheel_scroll(
+                                    page, distance=500, min_steps=3, max_steps=6
+                                )
+                                await page.wait_for_timeout(random.randint(300, 600))
 
                     except Exception as e:
                         logger.warning(

@@ -31,7 +31,7 @@ class HomeStep(BaseStep):
     label = "home"
 
     async def run(self, ctx: StepContext):
-        await actions._scroll(ctx.page, scroll_rounds=10)
+        await actions._scroll(ctx.page, scroll_rounds=5)
         return None
 
 
@@ -45,8 +45,8 @@ class AboutStep(BaseStep):
         import time
 
         start_time = time.perf_counter()
-        await actions._click_info_page_user(ctx.page)
-        await actions._scroll(ctx.page, scroll_rounds=2)
+        # await actions._click_info_page_user(ctx.page)
+        await actions._scroll(ctx.page, scroll_rounds=3)
         end_time = time.perf_counter()
         return {"time_execute": end_time - start_time}
 
@@ -61,12 +61,14 @@ class FriendsStep(BaseStep):
         return _build_section_url(ctx.base_url, "members")
 
     async def run(self, ctx: StepContext):
-        return await actions._hover_users(
+        result = await actions._hover_users(
             page=ctx.page,
-            scroll_rounds=10,
+            scroll_rounds=15,
             hover_delay_ms=600,
-            discovery_entity=ctx.discovery_entity,
         )
+        # Gộp entity tìm được vào ctx.discovery_entity
+        ctx.discovery_entity.extend(result.get("discovery_entity", []))
+        return result
 
 
 class UserFromReactionPostEntity(BaseStep):
@@ -81,7 +83,7 @@ class UserFromReactionPostEntity(BaseStep):
 
         start_time = time.perf_counter()
         results = await actions.extract_user_reaction_posts(
-            ctx.page, ctx.base_url, count_scroll=5
+            ctx.page, ctx.base_url, count_scroll=10
         )
         ctx.discovery_entity.extend(results)
         end_time = time.perf_counter()
@@ -91,7 +93,7 @@ class UserFromReactionPostEntity(BaseStep):
         return {
             "count_entity": len(results),
             "time_execute": end_time - start_time,
-            "discovery_entity": results,
+            "discovery_entity": results,  # hien taij test chyaj 5 worker dang de 10 lan scroll
         }
 
 

@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol
 import logging
+import os
+import datetime
 
 from playwright.async_api import Page
 
@@ -16,6 +18,16 @@ class StepContext:
     base_url: str
     discovery_entity: Any = None
     extracted_data: list = field(default_factory=list)
+
+    # ── Worker metadata ────────────────────────────────────────────────────────
+    # Tự động điền từ environment / hệ thống. Có thể override khi khởi tạo ctx.
+    worker_id: str = field(
+        default_factory=lambda: os.environ.get("WORKER_ID", "worker-default")
+    )
+    # pid: int = field(default_factory=os.getpid)
+    started_at: str = field(
+        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+    )
 
 
 @dataclass

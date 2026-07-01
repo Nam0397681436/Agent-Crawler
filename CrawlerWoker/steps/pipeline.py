@@ -1,6 +1,7 @@
 import logging
 from typing import List
 import json
+import datetime
 
 from .base_step import BaseStep, StepContext, StepResult, Navigator
 from services.publisher_kafka import KafkaPublisher
@@ -17,6 +18,19 @@ class StepPipeline:
 
     async def run(self, ctx: StepContext) -> List[StepResult]:
         results: List[StepResult] = []
+
+        # ── Inject worker metadata vào đầu extracted_data ─────────────────────
+        ctx.extracted_data.insert(
+            0,
+            {
+                "_metadata": {
+                    "worker_id": ctx.worker_id,
+                    # "pid": ctx.pid,
+                    "target_url": ctx.base_url,
+                    "started_at": ctx.started_at,
+                }
+            },
+        )
 
         for step in self.steps:
             logger.info(f"[crawler] Bắt đầu crawl: {step.label}")
@@ -48,9 +62,15 @@ class StepPipeline:
                 logger.warning(
                     f"[crawler] Kết thúc bước '{step.label}': FAILED ({result.error})"
                 )
+
+        # ── Cập nhật finished_at vào metadata sau khi tất cả step xong ────────
+        finished_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        ctx.extracted_data[0]["_metadata"]["finished_at"] = finished_at
+
         await KafkaPublisher().publish(
             ctx.extracted_data, topic="crawler_result_entity"
         )
+
         with open("crawler_result.json", "w") as f:
             json.dump(ctx.extracted_data, f)
 
