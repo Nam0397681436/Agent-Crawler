@@ -47,13 +47,30 @@ class FacebookCrawler:
     @staticmethod
     def _clean_url(url: str) -> str:
         """
-        Xóa query string (?_rdc=1&_rdr...) và fragment ra khỏi URL Facebook.
+        Xóa query string rác (?_rdc=1&_rdr...) và fragment ra khỏi URL Facebook.
+        Đặc biệt: giữ lại param `id` nếu URL là profile.php (vì id là định danh).
+
         Ví dụ:
           https://www.facebook.com/lam.anh/?_rdc=1&_rdr
           → https://www.facebook.com/lam.anh
+
+          https://www.facebook.com/profile.php?id=61588054329649&_rdc=1
+          → https://www.facebook.com/profile.php?id=61588054329649
         """
+        from urllib.parse import parse_qs, urlencode
+
         parsed = urlparse(url)
-        clean = parsed._replace(query="", fragment="")
+
+        # Nếu path là profile.php → giữ lại param `id`, bỏ các param rác khác
+        if parsed.path.rstrip("/").endswith("profile.php"):
+            params = parse_qs(parsed.query, keep_blank_values=False)
+            clean_params = {k: v for k, v in params.items() if k == "id"}
+            new_query = urlencode({k: v[0] for k, v in clean_params.items()})
+            clean = parsed._replace(query=new_query, fragment="")
+        else:
+            # URL dạng /username → xóa toàn bộ query string
+            clean = parsed._replace(query="", fragment="")
+
         return urlunparse(clean).rstrip("/")
 
     async def _capture_avatar(self, page: Page) -> str | None:
@@ -160,54 +177,4 @@ class FacebookCrawler:
                     self.extracted_data.append({"photos": photos})
 
         logger.info("[crawler] Hoàn thành pipeline user profile.")
-        return await self._publish_result()
-
-    async def run_group(self, page: Page) -> dict:
-        """
-        Pipeline cho trang Nhóm (Group).
-        Thêm bước mới: append thêm dict vào `steps` bên dưới.
-          action: "scroll" — navigate (nếu có url) rồi cuộn lấy thông tin nhóm
-          action: "hover"  — navigate rồi hover lấy danh sách thành viên
-        """
-        base_url = self._clean_url(page.url)
-        logger.info(f"[crawler] base_url (clean): {base_url}")
-        await self._capture_avatar(page)
-
-        steps = [
-            {"label": "home", "action": "scroll"},
-            {"label": "about", "action": "scroll", "url": f"{base_url}/about"},
-            {"label": "members", "action": "hover", "url": f"{base_url}/members"},
-        ]
-
-        for step in steps:
-            label = step["label"]
-            action = step["action"]
-            logger.info(f"[crawler] Bắt đầu crawl: {label} (group)")
-
-            # Navigate trước nếu step có url
-            if "url" in step:
-                ok = await self._safe_goto(page, step["url"])
-                if not ok:
-                    logger.warning(
-                        f"[crawler] Bỏ qua bước '{label}' do navigate thất bại."
-                    )
-                    continue
-
-            if label == "home":
-                await actions._scroll(page, scroll_rounds=20)
-
-            elif label == "about":
-                await smart_scroll_for_api(
-                    page, max_scroll_loops=3, min_wait_ms=1200, max_wait_ms=3000
-                )
-
-            elif label == "members":
-                await actions._hover_users(
-                    page=page,
-                    scroll_rounds=20,
-                    hover_delay_ms=500,
-                    discovery_entity=self.discovery_entity,
-                )
-
-        logger.info("[crawler] Hoàn thành pipeline group.")
         return await self._publish_result()

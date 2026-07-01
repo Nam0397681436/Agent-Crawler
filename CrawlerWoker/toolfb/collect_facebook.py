@@ -11,7 +11,7 @@ import json
 import logging
 import os
 from playwright.async_api import Page
-from core.fb_crawler import FacebookCrawler
+from steps.start_pipeline import CrawlerInfo
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -65,7 +65,7 @@ async def collect_facebook(
         return {"url": url, "status": "error", "error": "Browser chưa khởi động."}
 
     page: Page = await browser.new_page()
-    agent = None
+    fb_crawler_info = None
     result = None
     try:
         logger.info(f"[collect_facebook] Đăng nhập và navigate tới: {url}")
@@ -80,10 +80,10 @@ async def collect_facebook(
         except Exception:
             pass
 
-        # Giao cho agent tự nhìn screenshot và quyết định
+        # Giao cho crawler pipeline xử lý theo từng step
         task_prompt = _TASK_TEMPLATE.format(url=url)
-        fb_crawler = FacebookCrawler()
-        result = await fb_crawler.run_user_profile(page)
+        fb_crawler_info = CrawlerInfo()
+        result = await fb_crawler_info.run_user_profile(page)
 
         status = (
             "needs_user" if "[Cần can thiệp]" in result.get("summary", "") else "ok"
@@ -107,9 +107,9 @@ async def collect_facebook(
             result = {
                 "url": url,
                 "status": "interrupted",
-                "extracted_data": fb_crawler.extracted_data if fb_crawler else [],
+                "extracted_data": fb_crawler_info.extracted_data if fb_crawler_info else [],
                 "discovery_entity_ralationship": (
-                    fb_crawler.discovery_entity if fb_crawler else []
+                    fb_crawler_info.discovery_entity if fb_crawler_info else []
                 ),
                 "summary": "Bị gián đoạn do lỗi hoặc người dùng ngắt (Ctrl+C)",
                 "error": str(e),

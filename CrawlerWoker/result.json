@@ -1,5 +1,37 @@
 {
-  "url": "https://web.facebook.com/bui.van.an.229890",
-  "status": "error",
-  "error": "Đăng nhập thất bại."
+  "url": "https://web.facebook.com/trinh.ngokieu.35",
+  "status": "ok",
+  "extracted_data": [
+    {
+      "url_entity": "https://www.facebook.com/trinh.ngokieu.35?_rdc=1&_rdr"
+    },
+    {
+      "about": {
+        "time_execute": 9.200992267999027
+      }
+    },
+    {
+      "friends": {
+        "status": "ok",
+        "action": "hover_users",
+        "total_hovered": 0,
+        "total_user_extract": 0,
+        "discovery_entity": [],
+        "rounds": 2,
+        "time_crawl": 3.521840104000148
+      }
+    },
+    {
+      "reaction_users": {
+        "count_entity": 0,
+        "time_execute": 3.6341167869995843,
+        "discovery_entity": []
+      }
+    },
+    {
+      "photos": []
+    }
+  ],
+  "discovery_entity_ralationship": [],
+  "summary": "ok"
 }
