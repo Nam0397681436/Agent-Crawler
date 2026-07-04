@@ -103,7 +103,7 @@ class BrowserManager:
 
         return self.context
 
-    async def rotate_proxy_if_needed(self, interval_seconds: int = 1200) -> bool:
+    async def rotate_proxy_if_needed(self, interval_seconds: int = 200) -> bool:
         """
         Kiểm tra và xoay proxy nếu đã chạy quá interval_seconds.
         Trả về True nếu đã xoay, False nếu chưa đến lúc.
@@ -195,3 +195,8 @@ class BrowserManager:
             f"--disable-extensions-except={extension_path}",
             f"--load-extension={extension_path}",
         ]
+
+
+if __name__ == "__main__":
+    browser = BrowserManager()
+    asyncio.run(browser.start())

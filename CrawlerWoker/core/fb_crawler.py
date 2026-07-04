@@ -83,14 +83,13 @@ class FacebookCrawler:
         self.extracted_data.append({"url_entity": page.url})
         return url_avatar
 
-    async def _publish_result(self) -> dict:
+    async def _publish_result(self, topic: str = "entity_info_crawl") -> dict:
         """Đóng gói kết quả và publish lên Kafka."""
         result_data = {
             "extracted_data": self.extracted_data,
             "discovery_entity_ralationship": self.discovery_entity,
             "summary": "ok",
         }
-        topic = os.getenv("TOPIC_ENTITY_INFO", "entity_info_crawl").strip()
         kafka_publisher = KafkaPublisher()
         await kafka_publisher.publish(result_data, topic=topic)
         return result_data

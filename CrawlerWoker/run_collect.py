@@ -31,14 +31,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Đổi URL tại đây hoặc truyền qua dòng lệnh ───────────────────────────────
-# DEFAULT_URL = "https://web.facebook.com/profile.php?id=61588054329649"
-# DEFAULT_URL = "https://web.facebook.com/phat050705"
-DEFAULT_URL = "https://web.facebook.com/emoromenn"
-# DEFAULT_URL = "https://web.facebook.com/nhoangtan20"
-# DEFAULT_URL = "https://web.facebook.com/bui.van.an.229890"
-# DEFAULT_URL = "https://web.facebook.com/thu.ha.401835"
-# DEFAULT_URL = "https://web.facebook.com/LanPhuongsayhi/"
-# DEFAULT_URL = "https://web.facebook.com/chieu.xuan.662043"
+# DEFAULT_URL = "https://www.facebook.com/olas.809605"
+# DEFAULT_URL = "https://www.facebook.com/profile.php?id=100024823654866"
+# DEFAULT_URL = "https://web.facebook.com/olan.895936"
+# DEFAULT_URL = "https://web.facebook.com/www.unisystem.vn"
+# DEFAULT_URL = "https://web.facebook.com/trang.haha.923"
+DEFAULT_URL = "https://web.facebook.com/Khchauu71"
+# DEFAULT_URL = "https://web.facebook.com/profile.php?id=61567177834135"
 
 
 async def discovery_tree(
@@ -57,7 +56,11 @@ async def discovery_tree(
         return all_results
 
     for entity in discovery_entities:
-        url = entity.get("entity_url") if isinstance(entity, dict) else entity
+        url = (
+            entity.get("entity_url") or entity.get("href")
+            if isinstance(entity, dict)
+            else entity
+        )
         if not url or url in visited:
             continue
 
@@ -114,6 +117,9 @@ async def main():
             json.dump(result, f, ensure_ascii=False, indent=2)
 
         discovery_entity = result.get("discovery_entity_ralationship", [])
+        logger.info(
+            f"[run_collect] discovery_entity_ralationship count: {len(discovery_entity)}"
+        )
 
         # Bước 2: Bắt đầu tiến hành backtrack (DFS) quay lui
         if discovery_entity:

@@ -6,6 +6,7 @@ from .step_crawl import (
     FriendsStep,
     PhotosStep,
     UserFromReactionPostEntity,
+    FriendsStepNoHover,
 )
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "HomeStep",
     "AboutStep",
     "FriendsStep",
+    "FriendsStepNoHover",
     "PhotosStep",
     "UserFromReactionPostEntity",
 ]

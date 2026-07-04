@@ -24,6 +24,7 @@ class StepContext:
     worker_id: str = field(
         default_factory=lambda: os.environ.get("WORKER_ID", "worker-default")
     )
+    email_account: str = field(default_factory=lambda: os.environ.get("FB_EMAIL", ""))
     # pid: int = field(default_factory=os.getpid)
     started_at: str = field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()

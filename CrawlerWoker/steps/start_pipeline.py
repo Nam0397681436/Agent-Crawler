@@ -20,6 +20,7 @@ from steps import (
     HomeStep,
     AboutStep,
     FriendsStep,
+    FriendsStepNoHover,
     PhotosStep,
     UserFromReactionPostEntity,
 )
@@ -45,26 +46,36 @@ class CrawlerInfo(FacebookCrawler):
         steps/step_crawl.py, rồi append instance vào list `steps` bên dưới.
         Không cần sửa logic điều phối ở đây nữa.
         """
+
         base_url = self._clean_url(page.url)
         logger.info(f"[crawler] base_url (clean): {base_url}")
-        await self._capture_avatar(page)
-
         ctx = StepContext(
             page=page,
             base_url=base_url,
             discovery_entity=self.discovery_entity,
             extracted_data=self.extracted_data,
         )
-        friends_step = FriendsStep()
-        friends_step.fallback_step = UserFromReactionPostEntity()
+        url_avatar = await self._capture_avatar(page)
+        if url_avatar is None:
+            # Trang ca nhan nay khóa bảo vệ -> chạy pipeline khác
+            pipeline_crawl_user = StepPipeline(
+                steps=[
+                    AboutStep(),
+                ],
+                navigator=self,
+            )
+            await pipeline_crawl_user.run(ctx)
+            # bắn logg kafka user này bị khóa
+            return await self._publish_result()
+
+        friends_no_hover = FriendsStepNoHover()
+        friends_no_hover.fallback_step = UserFromReactionPostEntity()
 
         pipeline_crawl_user = StepPipeline(
             steps=[
                 HomeStep(),
                 AboutStep(),
-                # friends_step, usecase này đẻ chạy test sau
-                FriendsStep(),
-                UserFromReactionPostEntity(),
+                friends_no_hover,
                 PhotosStep(),
             ],
             navigator=self,
