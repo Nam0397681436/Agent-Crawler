@@ -51,9 +51,7 @@ class AboutStep(BaseStep):
 
         # Click vào tab "Giới thiệu" thay vì navigate URL
         try:
-            about_tab = ctx.page.locator(
-                'a[role="tab"][href*="/about"]'
-            ).first
+            about_tab = ctx.page.locator('a[role="tab"][href*="/about"]').first
             await about_tab.wait_for(state="visible", timeout=5000)
             await human_like_click(page=ctx.page, locator=about_tab)
             await ctx.page.wait_for_timeout(1500)
@@ -83,8 +81,8 @@ class FriendsStep(BaseStep):
             scroll_rounds=15,
             hover_delay_ms=600,
         )
-        # Gộp entity tìm được vào ctx.discovery_entity
-        ctx.discovery_entity.extend(result.get("discovery_entity", []))
+        # Gộp entity tìm được vào ctx.discovery_entity (có deduplicate)
+        ctx.add_discovery_entities(result.get("discovery_entity", []))
         return result
 
 
@@ -106,10 +104,9 @@ class FriendsStepNoHover(BaseStep):
             scroll_rounds=15,
         )
         result["time_execute"] = time.perf_counter() - start_time + 2
-        # Gộp entity tìm được vào ctx.discovery_entity
-
-        ctx.discovery_entity.extend(result.get("discovery_entity", []))
-        logger.info(f"[crawler] Tìm thấy {len(ctx.discovery_entity)} bạn bè mới.")
+        # Gộp entity tìm được vào ctx.discovery_entity (có deduplicate)
+        ctx.add_discovery_entities(result.get("discovery_entity", []))
+        logger.info(f"[crawler] Tổng số bạn bè/user discovery hiện tại: {len(ctx.discovery_entity)}")
         if len(result.get("discovery_entity", [])) < 30:
             raise Exception(
                 f"Số lượng bạn bè thu thập được ({len(result.get('discovery_entity', []))}) ít hơn 30 nhảy sang luồng crawl user reaction"
@@ -133,7 +130,7 @@ class UserFromReactionPostEntity(BaseStep):
         results = await actions.extract_user_reaction_posts(
             ctx.page, ctx.base_url, count_scroll=10
         )
-        ctx.discovery_entity.extend(results)
+        ctx.add_discovery_entities(results)
         end_time = time.perf_counter()
         logger.info(
             f"[crawler] Tìm thấy {len(results)} user reaction mới. Thực hiện crawl trong {end_time-start_time}s"

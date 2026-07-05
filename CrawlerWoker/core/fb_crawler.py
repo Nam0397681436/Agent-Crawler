@@ -80,7 +80,6 @@ class FacebookCrawler:
         url_avatar = await capture_avatar(page, self.extracted_data)
         if url_avatar:
             self.extracted_data.append({"url_avatar": url_avatar})
-        self.extracted_data.append({"url_entity": page.url})
         return url_avatar
 
     async def _publish_result(self, topic: str = "entity_info_crawl") -> dict:

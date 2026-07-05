@@ -23,6 +23,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 from core.browser import BrowserManager
 from toolfb.collect_facebook import collect_facebook
+from services.publisher_kafka import KafkaPublisher
 
 logging.basicConfig(
     level=logging.INFO,
@@ -100,6 +101,11 @@ async def main():
     url = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_URL
     logger.info(f"[run_collect] Bắt đầu thu thập gốc: {url}")
 
+    # Khởi tạo Kafka sớm — phát hiện lỗi kết nối trước khi crawl bất kỳ URL nào
+    # KafkaPublisher là Singleton: mọi nơi trong chương trình dùng chung 1 producer này
+    kafka = KafkaPublisher()
+    await kafka.start()
+
     browser = BrowserManager()
     await browser.start()
 
@@ -138,6 +144,9 @@ async def main():
         #     json.dump(all_results, f, ensure_ascii=False, indent=2)
     finally:
         await browser.stop()
+        # Flush buffer Kafka và đóng producer — đảm bảo không mất message đang pending
+        await kafka.close()
+        logger.info("[run_collect] Kafka producer đã đóng sạch.")
 
 
 if __name__ == "__main__":

@@ -10,6 +10,26 @@ from playwright.async_api import Page
 logger = logging.getLogger(__name__)
 
 
+def clean_fb_url(url: str) -> str:
+    """
+    Xóa query string rác và fragment ra khỏi URL Facebook,
+    giữ lại param `id` nếu là profile.php để đảm bảo deduplicate chuẩn xác.
+    """
+    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+    if not url or not isinstance(url, str):
+        return ""
+    parsed = urlparse(url)
+    if parsed.path.rstrip("/").endswith("profile.php"):
+        params = parse_qs(parsed.query, keep_blank_values=False)
+        clean_params = {k: v for k, v in params.items() if k == "id"}
+        new_query = urlencode({k: v[0] for k, v in clean_params.items()})
+        clean = parsed._replace(query=new_query, fragment="")
+    else:
+        clean = parsed._replace(query="", fragment="")
+    return urlunparse(clean).rstrip("/")
+
+
 @dataclass
 class StepContext:
     """Context dùng chung, truyền xuyên suốt pipeline."""
@@ -29,6 +49,58 @@ class StepContext:
     started_at: str = field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
     )
+    seen_entity_urls: set = field(default_factory=set, init=False)
+
+    def __post_init__(self):
+        if self.discovery_entity is None:
+            self.discovery_entity = []
+        else:
+            # Loại bỏ trùng lặp và khởi tạo seen_entity_urls từ danh sách hiện có
+            unique_list = []
+            for item in self.discovery_entity:
+                if isinstance(item, dict):
+                    raw_url = item.get("entity_url") or item.get("href")
+                    if raw_url:
+                        clean = clean_fb_url(raw_url)
+                        if clean and clean not in self.seen_entity_urls:
+                            self.seen_entity_urls.add(clean)
+                            item["entity_url"] = clean
+                            item["href"] = clean
+                            unique_list.append(item)
+                elif isinstance(item, str):
+                    clean = clean_fb_url(item)
+                    if clean and clean not in self.seen_entity_urls:
+                        self.seen_entity_urls.add(clean)
+                        unique_list.append(clean)
+            self.discovery_entity[:] = unique_list
+
+    def add_discovery_entities(self, new_entities: list):
+        """
+        Thêm danh sách entity vào discovery_entity mà không bị trùng lặp user.
+        Sử dụng biến set `seen_entity_urls` để kiểm tra nhanh và chuẩn hóa URL.
+        """
+        if self.discovery_entity is None:
+            self.discovery_entity = []
+        if not new_entities:
+            return
+        for item in new_entities:
+            if isinstance(item, dict):
+                raw_url = item.get("entity_url") or item.get("href")
+                if not raw_url:
+                    continue
+                clean = clean_fb_url(raw_url)
+                if not clean or clean in self.seen_entity_urls:
+                    continue
+                self.seen_entity_urls.add(clean)
+                item["entity_url"] = clean
+                item["href"] = clean
+                self.discovery_entity.append(item)
+            elif isinstance(item, str):
+                clean = clean_fb_url(item)
+                if not clean or clean in self.seen_entity_urls:
+                    continue
+                self.seen_entity_urls.add(clean)
+                self.discovery_entity.append(clean)
 
 
 @dataclass

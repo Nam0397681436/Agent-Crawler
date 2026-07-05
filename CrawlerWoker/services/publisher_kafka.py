@@ -84,5 +84,8 @@ class KafkaPublisher:
 
     async def close(self):
         if self.producer:
+            # Flush đẩy hết message đang buffer trước khi đóng kết nối
+            await asyncio.to_thread(self.producer.flush)
             await asyncio.to_thread(self.producer.close)
             self.producer = None
+            logger.info("Kafka Producer closed cleanly.")

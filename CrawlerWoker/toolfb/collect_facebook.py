@@ -7,6 +7,7 @@ cần click tab nào, scroll ở đâu để lấy hết thông tin.
 Không cần biết trước URL là loại gì — agent tự nhận diện qua ảnh.
 """
 
+from services.publisher_kafka import KafkaPublisher
 import json
 import logging
 import os
@@ -100,28 +101,57 @@ async def collect_facebook(
         }
 
     except BaseException as e:
-        logger.error(f"[collect_facebook] Bị gián đoạn/Lỗi: {e}")
+        logger.error(f"[collect_facebook] Bị gián đoạn/Lỗi khi thu thập {url}: {e}")
+        extracted = fb_crawler_info.extracted_data if fb_crawler_info else []
+        discovery = fb_crawler_info.discovery_entity if fb_crawler_info else []
 
-        # Nếu đang chạy dở mà bị ngắt, cứu dữ liệu trong agent
-        if result is None:
-            result = {
-                "url": url,
-                "status": "interrupted",
-                "extracted_data": fb_crawler_info.extracted_data if fb_crawler_info else [],
-                "discovery_entity_ralationship": (
-                    fb_crawler_info.discovery_entity if fb_crawler_info else []
-                ),
-                "summary": "Bị gián đoạn do lỗi hoặc người dùng ngắt (Ctrl+C)",
-                "error": str(e),
-            }
+        # Chỉ publish error lên Kafka nếu đã thu được ít nhất 1 trường dữ liệu
+        # (tránh gửi payload rỗng khi lỗi xảy ra ngạy từ đầu, VD: login thất bại)
+        has_meaningful_data = any(
+            k not in ("_metadata",)
+            for item in extracted
+            for k in (item.keys() if isinstance(item, dict) else [])
+        )
+
+        if has_meaningful_data or discovery:
+            kafka_publisher = KafkaPublisher()
+            await kafka_publisher.publish(
+                data={
+                    "url": url,
+                    "status": "error",
+                    "extracted_data": extracted,
+                    "discovery_entity_ralationship": discovery,
+                    "summary": "Bị gián đoạn do lỗi hoặc người dùng ngắt (Ctrl+C)",
+                    "error": str(e),
+                },
+                topic="entity_info_crawl_error",
+            )
+            logger.info(f"[collect_facebook] Đã lưu dữ liệu tạm vào Kafka topic 'entity_info_crawl_error'.")
         else:
-            result["status"] = "error"
-            result["error"] = str(e)
+            logger.warning(f"[collect_facebook] Không có dữ liệu ý nghĩa nào để lưu, bỏ qua publish Kafka.")
 
-        with open("result.json", "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
+        # # Nếu đang chạy dở mà bị ngắt, cứu dữ liệu trong agent
+        # if result is None:
+        #     result = {
+        #         "url": url,
+        #         "status": "interrupted",
+        #         "extracted_data": (
+        #             fb_crawler_info.extracted_data if fb_crawler_info else []
+        #         ),
+        #         "discovery_entity_ralationship": (
+        #             fb_crawler_info.discovery_entity if fb_crawler_info else []
+        #         ),
+        #         "summary": "Bị gián đoạn do lỗi hoặc người dùng ngắt (Ctrl+C)",
+        #         "error": str(e),
+        #     }
+        # else:
+        #     result["status"] = "error"
+        #     result["error"] = str(e)
 
-        return result
+        # with open("result.json", "w", encoding="utf-8") as f:
+        #     json.dump(result, f, ensure_ascii=False, indent=2)
+
+        # return result
 
     finally:
         try:
