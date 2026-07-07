@@ -58,7 +58,7 @@ class AboutStep(BaseStep):
         except Exception as e:
             logger.warning(f"[AboutStep] Không click được tab 'Giới thiệu': {e}")
 
-        await actions._click_info_page_user(ctx.page)
+        # await actions._click_info_page_user(ctx.page)
         await actions._scroll(ctx.page, scroll_rounds=3)
         end_time = time.perf_counter()
         return {"time_execute": end_time - start_time}
@@ -106,7 +106,9 @@ class FriendsStepNoHover(BaseStep):
         result["time_execute"] = time.perf_counter() - start_time + 2
         # Gộp entity tìm được vào ctx.discovery_entity (có deduplicate)
         ctx.add_discovery_entities(result.get("discovery_entity", []))
-        logger.info(f"[crawler] Tổng số bạn bè/user discovery hiện tại: {len(ctx.discovery_entity)}")
+        logger.info(
+            f"[crawler] Tổng số bạn bè/user discovery hiện tại: {len(ctx.discovery_entity)}"
+        )
         if len(result.get("discovery_entity", [])) < 30:
             raise Exception(
                 f"Số lượng bạn bè thu thập được ({len(result.get('discovery_entity', []))}) ít hơn 30 nhảy sang luồng crawl user reaction"

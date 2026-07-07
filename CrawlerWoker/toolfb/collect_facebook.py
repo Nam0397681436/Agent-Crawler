@@ -20,31 +20,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ── Prompt điều hướng và trích xuất dữ liệu ─────────────────────────────────
-_TASK_TEMPLATE = """
-URL: {url}
-Xác định loại trang qua screenshot: Profile, Group, hay Page.
-
-QUY TẮC CHUNG (bắt buộc):
-- Mỗi tab thực hiện ĐÚNG 1 LẦN theo thứ tự, KHÔNG quay lại.
-- extract_data CHỈ dùng trong tab Giới thiệu. TUYỆT ĐỐI không gọi ở tab khác.
-- Không join group, kết bạn, nhắn tin.
-- Captcha/xác minh → ask_user ngay.
-- Bỏ qua các tab: Reels, Sự kiện, Đáng chú ý, Checkin, Bài đánh giá, Xem thêm.
-- Không phải profile/group/page → done ngay.
-
-PROFILE / PAGE — Thứ tự: Tất cả → Giới thiệu → Bạn bè (Page: Người theo dõi) → Ảnh (Page: bỏ) → done
-[1] Tất cả: Scroll 30 lần, KHÔNG extract_data.
-[2] Giới thiệu: Click tab → extract_data header (Tên, bạn bè, theo dõi) → click từng menu phụ (Tổng quan, Công việc, Nơi sống, Liên hệ...) → ghi nhận nội dung mỗi menu → KHÔNG scroll.
-[3] Bạn bè/Người theo dõi: Click tab → hệ thống tự thu thập.
-[4] Ảnh (Profile only): Click tab → hệ thống tự thu thập → done.
-
-GROUP — Thứ tự: Thảo luận → Giới thiệu → Thành viên/Mọi người → done
-[1] Thảo luận: Scroll 30 lần, KHÔNG extract_data.
-[2] Giới thiệu: Click tab → extract_data (tên, thành viên, mô tả, quy tắc...) → scroll nhẹ 2 lần → ghi nhận phần còn lại.
-[3] Thành viên/Mọi người: Click tab → hệ thống tự thu thập.
-""".strip()
-
 
 async def collect_facebook(
     url: str,
@@ -82,9 +57,23 @@ async def collect_facebook(
             pass
 
         # Giao cho crawler pipeline xử lý theo từng step
-        task_prompt = _TASK_TEMPLATE.format(url=url)
         fb_crawler_info = CrawlerInfo()
-        result = await fb_crawler_info.run_user_profile(page)
+        if "/group" in url:
+            result = await fb_crawler_info.run_group(page)
+        else:
+            # Profile or Page (2 cái này dùng chung 1 flow)
+            if "/user" in url:
+                # user này được refer từ group. phải click mới đi vào hẳn trang cá nhân chính
+                try:
+                    from core.actions import click_user_refer_group
+
+                    await click_user_refer_group(page, url)
+
+                except Exception as e:
+                    logger.error(f"[collect_facebook] Lỗi khi click vào user: {e}")
+                    raise
+
+                result = await fb_crawler_info.run_user_profile(page)
 
         status = (
             "needs_user" if "[Cần can thiệp]" in result.get("summary", "") else "ok"
@@ -126,9 +115,13 @@ async def collect_facebook(
                 },
                 topic="entity_info_crawl_error",
             )
-            logger.info(f"[collect_facebook] Đã lưu dữ liệu tạm vào Kafka topic 'entity_info_crawl_error'.")
+            logger.info(
+                f"[collect_facebook] Đã lưu dữ liệu tạm vào Kafka topic 'entity_info_crawl_error'."
+            )
         else:
-            logger.warning(f"[collect_facebook] Không có dữ liệu ý nghĩa nào để lưu, bỏ qua publish Kafka.")
+            logger.warning(
+                f"[collect_facebook] Không có dữ liệu ý nghĩa nào để lưu, bỏ qua publish Kafka."
+            )
 
         # # Nếu đang chạy dở mà bị ngắt, cứu dữ liệu trong agent
         # if result is None:

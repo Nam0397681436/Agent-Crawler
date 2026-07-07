@@ -50,3 +50,34 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+
+  redis:
+    image: redis:7.0
+    container_name: redis
+    restart: unless-stopped
+
+    command: redis-server --requirepass Nam12345@
+
+    ports:
+      - "6379:6379"
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "Nam12345@", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander
+    restart: unless-stopped
+
+    ports:
+      - "8086:8081"
+
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:Nam12345@
+
+    depends_on:
+      redis:
+        condition: service_healthy

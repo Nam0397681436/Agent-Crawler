@@ -1,4 +1,4 @@
- """
+"""
 core/actions.py — Lớp 2: Action space
 =======================================
 Định nghĩa "menu" hành động agent được phép thực hiện.
@@ -588,6 +588,27 @@ async def _extract_list_friends(
     }
 
 
+async def click_user_refer_group(page: Page, url: str):
+    """
+    Click vào menu 'Xem trang cá nhân'.
+    """
+
+    locator = page.locator("span").filter(has_text="Xem trang cá nhân").first
+
+    try:
+        await locator.wait_for(state="visible", timeout=5000)
+    except TimeoutError:
+        raise RuntimeError("Không tìm thấy menu 'Xem trang cá nhân'")
+
+    await human_like_click(
+        page=page,
+        locator=locator,
+        timeout_ms=5000,
+    )
+
+    await page.wait_for_load_state("networkidle")
+
+
 async def extract_user_reaction_posts(
     page: Page, url: str, count_scroll: int = 10, count_click: int = 5
 ):
@@ -624,7 +645,30 @@ async def extract_user_reaction_posts(
             let href = a.getAttribute("href") || "";
             if (text && href) {
                 if (href.includes("?")) href = href.split("?")[0];
-                results.push({ name: text, entity_url: href });
+                
+                let imageUrl = null;
+                let curr = a;
+                for (let i = 0; i < 8; i++) {
+                    if (!curr.parentElement || curr.parentElement === dialog) break;
+                    curr = curr.parentElement;
+                    if (curr.querySelectorAll('a[role="link"]').length > 4) break;
+                    
+                    const imgs = curr.querySelectorAll('image, img');
+                    for (const img of imgs) {
+                        const wVal = parseInt(img.getAttribute('width') || img.clientWidth || 0);
+                        const hVal = parseInt(img.getAttribute('height') || img.clientHeight || 0);
+                        if ((wVal > 0 && wVal <= 24) || (hVal > 0 && hVal <= 24)) continue;
+                        
+                        const src = img.getAttribute('xlink:href') || img.getAttribute('href') || (img.href ? (img.href.baseVal || img.href.val || img.href) : "") || img.src || "";
+                        if (src && !src.includes('data:image')) {
+                            imageUrl = src;
+                            break;
+                        }
+                    }
+                    if (imageUrl) break;
+                }
+                
+                results.push({ name: text, entity_url: href, image_url: imageUrl });
             }
         }
         return results;

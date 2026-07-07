@@ -1,14 +1,3 @@
-"""
-run_collect.py — Chạy thu thập thông tin từ bất kỳ URL Facebook nào
-=====================================================================
-Dùng để test trực tiếp, bỏ qua Kafka / router.
-
-Cách chạy (từ thư mục CrawlerWoker):
-    python run_collect.py https://www.facebook.com/zuck
-    python run_collect.py https://www.facebook.com/groups/123456
-    python run_collect.py https://www.facebook.com/cocacola
-"""
-
 import asyncio
 import json
 import logging
@@ -48,51 +37,59 @@ async def discovery_tree(
     visited: set = None,
     all_results: list = None,
 ):
+    """Duyệt BFS theo từng level: xử lý hết tất cả entities ở độ sâu hiện tại
+    trước, gom entities mới thành next_level, rồi mới tiến sang độ sâu tiếp theo.
+    """
     if visited is None:
         visited = set()
     if all_results is None:
         all_results = []
 
-    if deep <= 0 or not discovery_entities:
-        return all_results
+    current_level = list(discovery_entities)
+    current_deep = deep
 
-    for entity in discovery_entities:
-        url = (
-            entity.get("entity_url") or entity.get("href")
-            if isinstance(entity, dict)
-            else entity
+    while current_deep > 0 and current_level:
+        next_level = []  # Gom tất cả entities của độ sâu kế tiếp
+
+        logger.info(
+            f"[discovery_tree] === Bắt đầu duyệt độ sâu {current_deep} "
+            f"({len(current_level)} entities) ==="
         )
-        if not url or url in visited:
-            continue
 
-        visited.add(url)
-        logger.info(f"[discovery_tree] (Deep {deep}) Tiến hành thu thập URL: {url}")
+        for entity in current_level:
+            url = (
+                entity.get("entity_url") or entity.get("href")
+                if isinstance(entity, dict)
+                else entity
+            )
+            if not url or url in visited:
+                continue
 
-        try:
-            await browser.rotate_proxy_if_needed()
-            result = await collect_facebook(url=url, browser=browser)
-            all_results.append(result)
+            visited.add(url)
+            logger.info(f"[discovery_tree] (Deep {current_deep}) Thu thập URL: {url}")
 
-            new_discovery_entities = result.get("discovery_entity_ralationship", [])
-            if new_discovery_entities:
-                # Lưu file log tạm cho mỗi url đã thu thập thành công
+            try:
+                await browser.rotate_proxy_if_needed()
+                result = await collect_facebook(url=url, browser=browser)
+                all_results.append(result)
+
+                # Lưu file log tạm sau mỗi URL thu thập thành công
                 out_path = os.path.join(
                     os.path.dirname(__file__), "collect_result_temp.json"
                 )
-
                 with open(out_path, "w", encoding="utf-8") as f:
                     json.dump(all_results, f, ensure_ascii=False, indent=2)
 
-                # Tiếp tục gọi đệ quy cho độ sâu tiếp theo
-                await discovery_tree(
-                    deep=deep - 1,
-                    discovery_entities=new_discovery_entities,
-                    browser=browser,
-                    visited=visited,
-                    all_results=all_results,
-                )
-        except Exception as e:
-            logger.error(f"[discovery_tree] Lỗi khi thu thập {url}: {e}")
+                # Gom entities mới vào next_level (chưa xử lý ngay)
+                new_entities = result.get("discovery_entity_ralationship", [])
+                next_level.extend(new_entities)
+
+            except Exception as e:
+                logger.error(f"[discovery_tree] Lỗi khi thu thập {url}: {e}")
+
+        # Chuyển sang độ sâu tiếp theo
+        current_level = next_level
+        current_deep -= 1
 
     return all_results
 
@@ -127,7 +124,7 @@ async def main():
             f"[run_collect] discovery_entity_ralationship count: {len(discovery_entity)}"
         )
 
-        # Bước 2: Bắt đầu tiến hành backtrack (DFS) quay lui
+        # Bước 2: Bắt đầu tiến hành duyệt BFS theo từng level
         if discovery_entity:
             logger.info(f"[run_collect] Bắt đầu duyệt cây với độ sâu {deep_discovery}")
             await discovery_tree(
