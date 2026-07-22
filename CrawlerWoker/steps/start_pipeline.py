@@ -66,7 +66,7 @@ class CrawlerInfo(FacebookCrawler):
             )
             await pipeline_crawl_user.run(ctx)
             # bắn logg kafka user này bị khóa
-            return await self._publish_result()
+            return await self._publish_result(topic="user_profile_locked")
 
         friends_no_hover = FriendsStepNoHover()
         friends_no_hover.fallback_step = UserFromReactionPostEntity()
@@ -74,9 +74,9 @@ class CrawlerInfo(FacebookCrawler):
         pipeline_crawl_user = StepPipeline(
             steps=[
                 HomeStep(),
-                AboutStep(),
-                friends_no_hover,
+                # friends_no_hover,
                 PhotosStep(),
+                UserFromReactionPostEntity(),
             ],
             navigator=self,
         )
@@ -105,11 +105,12 @@ class CrawlerInfo(FacebookCrawler):
             discovery_entity=self.discovery_entity,
             extracted_data=self.extracted_data,
         )
-
+        member_step = MembersStep()
+        member_step.fallback_step = UserFromReactionPostEntity()
         pipeline = StepPipeline(
             steps=[
-                HomeGroupStep(),
-                AboutGroupStep(),
+                HomeStep(),
+                AboutStep(),
                 MembersStep(),
             ],
             navigator=self,

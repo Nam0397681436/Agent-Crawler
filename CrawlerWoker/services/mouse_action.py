@@ -8,7 +8,7 @@ from playwright.async_api import Page, Locator
 async def human_like_click(
     page: Page,
     locator: Locator,
-    timeout_ms: int = 5000,
+    timeout_ms: int = 3000,
     debug: bool = False,
 ) -> Dict[str, Any]:
     """

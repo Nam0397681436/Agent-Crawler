@@ -102,7 +102,7 @@ async def _scroll_to_top(page: Page, **_) -> dict:
     try:
         from services.scroll_antibot import smooth_wheel_scroll
 
-        TARGET_Y = random.randint(490, 500)  # Pixel cách đỉnh trang — luôn cố định
+        TARGET_Y = random.randint(300, 400)  # Pixel cách đỉnh trang — luôn cố định
 
         scroll_y = await page.evaluate("window.scrollY || window.pageYOffset || 0")
         distance_to_scroll = TARGET_Y - scroll_y
@@ -241,242 +241,140 @@ async def _done(page: Page, summary: str, **_) -> dict:
     return {"status": "done", "action": "done", "summary": summary}
 
 
-async def _hover_users(
-    page: Page,
-    scroll_rounds: int = 10,
-    hover_delay_ms: int = 1200,  # Max wait per card (ms) — tăng lên để không bỏ sót response
-    min_dwell_ms: int = 800,  # Minimum time (ms) chuột PHẢI đứng yên trước khi rời card
-    on_bulk_response=None,  # async callable(raw_text: str) -> None
-    **_,
+async def _extract_info_list_posts(
+    page: Page, scroll_rounds: int = 10, isUser: bool = True
 ) -> dict:
-    """
-    Hover lần lượt qua từng thẻ người dùng trong trang Bạn bè / Thành viên.
+    result = {"posts": {}}  # dict để dùng aria-posinset làm key, tránh trùng lặp
+    EMPTY_TEXT = "Không có bài viết"
+    TARGET_SELECTOR = 'div[aria-posinset][class~="x1a2a7pz"]'
+    VIRTUALIZED_LOADED_SELECTOR = 'div[data-virtualized="false"]'
+    SEE_MORE_TEXT = "Xem thêm"
+    SEE_MORE_SELECTOR = 'div[role="button"]'
+    EXTRACTS_MORE_INFO = [
+        "Xem thêm thông tin cá nhân",
+        "Xem thêm công việc",
+        "Xem thêm học vấn",
+    ]
 
-    ── Tối ưu v2 (global listener) ────────────────────────────────────────────
-    Thay vì dùng `page.expect_response()` cho mỗi card (block 1200ms/card),
-    ta dùng 1 listener `page.on("response")` toàn cục chạy suốt toàn bộ hàm.
-    Hover card nhanh, response được xử lý song song — giảm ~70% thời gian chờ.
-    ────────────────────────────────────────────────────────────────────────────
-    """
+    if isUser:
+        # extract html info basic
+        html_basic_info_el = await page.query_selector(
+            "div.x9f619.x1n2onr6.x1ja2u2z.x78zum5.xdt5ytf.x193iq5w.xeuugli.x1iyjqo2.xs83m0k.xz9dl7a.x11lfxj5.xjkvuk6.x1g0dm76"
+        )
 
-    FIND_CARDS_JS = """
-    () => {
-        const results = [];
-        const seen = new Set();
+        if not html_basic_info_el:
+            raise Exception("Lỗi: Facebook có thể đã cập nhật giao diện")
 
-        const avatarAnchors = document.querySelectorAll('a[aria-hidden="true"] img');
+        await smooth_wheel_scroll(page, distance=300, min_steps=2, max_steps=4)
+        await page.wait_for_timeout(random.randint(1000, 3000))
+        logger.info("Đang chờ để click lấy thêm info user")
 
-        for (const img of avatarAnchors) {
-            const avatarAnchor = img.closest('a[aria-hidden="true"]');
-            if (!avatarAnchor) continue;
+        # extract html info user trước
+        for text in EXTRACTS_MORE_INFO:
+            locator = page.get_by_text(text, exact=True)
+            if await locator.count() > 0:
+                await human_like_click(page=page, locator=locator.first)
+                await page.wait_for_timeout(random.randint(200, 300))
 
-            const href = avatarAnchor.href || '';
-            const excludedPaths = ['/place', '/page', '/groups', '/post', '/videos'];
+        div_element_info = await page.query_selector(
+            "div.x1n2onr6.x1ja2u2z.x1jx94hy.xw5cjc7.x1dmpuos.x1vsv7so.xau1kf4.x9f619.xh8yej3.x6ikm8r.x10wlt62.xquyuld.xsag5q8"
+        )
 
-            if (
-                !href.includes('facebook.com/') ||
-                excludedPaths.some(path => href.includes(path))
-            ) {
-                continue;
-            }
-            if (href.includes('/friends') || href.endsWith('facebook.com/')) continue;
-            if (seen.has(href)) continue;
+        if not div_element_info:
+            # bắn log error facebook cập nhật giao diện
+            raise Exception("Lỗi: Facebook có thể đã cập nhật giao diện.")
 
-            const card = avatarAnchor.closest('div.x6s0dn4');
-            if (!card) continue;
+        html_content_info = await div_element_info.inner_html()
+        html_basic_info = await html_basic_info_el.inner_html()  # ← fix: extract string, không lưu ElementHandle
+        result["info_personal"] = html_content_info
+        result["info_basic"] = html_basic_info
+        await _scroll_to_top(page)
 
-            const nameEl = card.querySelector('a[role="link"]:not([aria-hidden]) span[dir="auto"]');
-            const name = nameEl ? nameEl.textContent.trim() : null;
-            const imageUrl = img.src || null;
+    # ---- BƯỚC 1: check trang có xác nhận "Không có bài viết" không ----
+    # dùng get_by_text để match chính xác text (tránh match nhầm text chứa chuỗi con)
+    empty_locator = page.get_by_text(EMPTY_TEXT, exact=True)
+    if await empty_locator.count() > 0:
+        logger.info(
+            f"Tìm thấy span '{EMPTY_TEXT}' -> trang không có bài viết (hợp lệ)."
+        )
+        return result
 
-            const rect = avatarAnchor.getBoundingClientRect();
-            if (rect.width === 0 || rect.height === 0) continue;
-            const inViewport = rect.top < window.innerHeight && rect.bottom > 0;
+    loaded_any = False
+    for round_idx in range(scroll_rounds):
+        elements = await page.locator(TARGET_SELECTOR).all()
 
-            seen.add(href);
-            results.push({
-                href,
-                name,
-                image_url: imageUrl,
-                x: rect.x + rect.width / 2,
-                y: rect.y + rect.height / 2,
-                in_viewport: inViewport,
-            });
+        for el in elements:
+            posinset = await el.get_attribute("aria-posinset")
+            if posinset is None or posinset in result["posts"]:
+                continue  # đã thu thập rồi, hoặc thiếu attribute -> bỏ qua
+
+            loaded_child = el.locator(VIRTUALIZED_LOADED_SELECTOR)
+            if await loaded_child.count() > 0:
+                see_more = el.locator(SEE_MORE_SELECTOR).get_by_text(
+                    SEE_MORE_TEXT, exact=True
+                )
+                see_more_count = await see_more.count()
+                if see_more_count > 0:
+                    target = see_more.first
+
+                    # Check: hit-test tại toạ độ click, chỉ cần đảm bảo KHÔNG trúng
+                    # link Reels ("Thước phim") hoặc link nhóm ("/groups/")
+                    box = await target.bounding_box(timeout=1000)
+                    is_unsafe_widget = False
+                    if box and box["width"] > 0 and box["height"] > 0:
+                        cx = box["x"] + box["width"] / 2
+                        cy = box["y"] + box["height"] / 2
+                        is_unsafe_widget = await page.evaluate(
+                            """([x, y]) => {
+                                const el = document.elementFromPoint(x, y);
+                                if (!el) return false;
+                                const bad = el.closest(
+                                    'a[href^="/reel/"], a[aria-label="Thước phim"], ' +
+                                    'a[href*="/groups/"], a[href^="group/"]'
+                                );
+                                return !!bad;
+                            }""",
+                            [cx, cy],
+                        )
+
+                    if not is_unsafe_widget:
+                        try:
+                            await human_like_click(page, target)
+                            await page.wait_for_timeout(random.randint(200, 300))
+                            logger.info(
+                                f"Đã click 'Xem thêm' cho bài viết aria-posinset={posinset}"
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Click 'Xem thêm' thất bại cho aria-posinset={posinset}: {e}"
+                            )
+                    else:
+                        logger.info(
+                            f"Bỏ qua click 'Xem thêm' cho aria-posinset={posinset} "
+                            f"do không xác thực được toạ độ an toàn."
+                        )
+
+                # Lấy outerHTML SAU KHI đã click mở rộng (nếu có), để có full content
+                html = await el.evaluate("node => node.outerHTML")
+                result["posts"][posinset] = html
+                loaded_any = True
+                logger.info(
+                    f"[scroll #{round_idx+1}] Đã lấy bài viết aria-posinset={posinset}"
+                )
+        await smooth_wheel_scroll(page, distance=1000, min_steps=1, max_steps=2)
+        await page.wait_for_timeout(random.randint(200, 300))
+
+    # BƯỚC 4: kết luận
+    if not loaded_any and not result.get("empty"):
+        # báo lỗi thay đổi cấu trúc html
+        return {
+            "error": "Structure changed",
+            "message": "Không tìm thấy bài viết.",
+            "posts": [],
         }
 
-        return results;
-    }
-    """
-
-    from services.mouse_action import _move_mouse_curve
-    from services.parse_bulk_route import bulk_route_parser_worker
-    from services.scroll_antibot import smooth_wheel_scroll
-
-    total_hovered = 0
-    total_rounds = 0
-    seen_hrefs: set[str] = set()
-    # List nội bộ — chỉ chứa entity do HÀM NÀY tìm được, không dùng chung với bên ngoài
-    _found_entities: list[dict] = []
-    import asyncio
-    import time
-
-    start_time = time.perf_counter()
-
-    # ── Event báo hiệu entity response đã về cho card đang hover ─────────────
-    # Chỉ được set khi nhận response entity THỰC SỰ (không set cho non-entity shell).
-    # Vòng lặp hover LUÔN chờ ít nhất min_dwell_ms trước, sau đó mới dùng event
-    # để thoát sớm nếu entity về — hoặc tiếp tục đến hết hover_delay_ms.
-    _response_event = asyncio.Event()
-
-    _pending_hrefs: list[str] = []  # href của card vừa hover gần nhất
-    total_api = 0
-
-    async def _on_bulk_response(response):
-        """Xử lý response bulk-route-definitions khi nhận được."""
-        if "bulk-route-definitions/" not in response.url:
-            return
-        try:
-            nonlocal total_api
-            total_api += 1
-            raw_text = await response.text()
-            is_entity = bulk_route_parser_worker(raw_text)
-            if not is_entity:
-                # KHÔNG set event sớm — để chuột ở lại đủ min_dwell_ms.
-                # FB hay gửi 1 response shell trước, rồi mới gửi entity sau.
-                logger.debug(
-                    f"[hover_users] Non-entity bulk response (total={total_api})"
-                )
-                return
-            # Lấy href mới nhất của card đang hover (best-effort mapping)
-            href = _pending_hrefs[-1] if _pending_hrefs else ""
-            if href and not href.endswith("facebook.com/"):
-                # Tránh thêm trùng
-                known = {e["entity_url"] for e in _found_entities}
-                if href not in known:
-                    # Tìm metadata card tương ứng
-                    name = None
-                    image_url = None
-                    for _card_meta in _card_meta_map.values():
-                        if _card_meta["href"] == href:
-                            name = _card_meta.get("name")
-                            image_url = _card_meta.get("image_url")
-                            break
-                    _found_entities.append(
-                        {"entity_url": href, "name": name, "image_url": image_url}
-                    )
-                    logger.info(f"[hover_users] ✅ Entity: {href}")
-            # Báo hiệu: entity response đã về — có thể chuyển card ngay
-            _response_event.set()
-        except Exception as e:
-            logger.debug(f"[hover_users] Lỗi xử lý bulk response: {e}")
-
-    # Map href → metadata card để callback tra cứu
-    _card_meta_map: dict[str, dict] = {}
-
-    page.on("response", _on_bulk_response)
-
-    try:
-        cur_x, cur_y = 100.0, 300.0
-
-        for round_i in range(scroll_rounds):
-            total_rounds += 1
-
-            try:
-                cards: list[dict] = await page.evaluate(FIND_CARDS_JS)
-            except Exception as e:
-                logger.warning(f"[hover_users] Lỗi FIND_CARDS_JS: {e}")
-                cards = []
-
-            in_viewport_cards = [
-                c
-                for c in cards
-                if c.get("in_viewport") and c.get("href") not in seen_hrefs
-            ]
-            logger.info(
-                f"[hover_users] Round {round_i+1}: {len(in_viewport_cards)} card mới "
-                f"(bỏ qua {len(cards) - len(in_viewport_cards)} trùng/ngoài viewport)"
-            )
-
-            for card in in_viewport_cards:
-                href = card.get("href", "")
-                seen_hrefs.add(href)
-                _card_meta_map[href] = card  # lưu metadata để callback dùng
-
-                try:
-                    target_x = card["x"] + random.uniform(-5, 5)
-                    target_y = card["y"] + random.uniform(-3, 3)
-
-                    # ── Di chuyển chuột: dùng Bezier curve ngắn ─────────────
-                    await _move_mouse_curve(
-                        page=page,
-                        start_x=cur_x,
-                        start_y=cur_y,
-                        end_x=target_x,
-                        end_y=target_y,
-                        total_time_ms=random.uniform(
-                            300, 500
-                        ),  # nhanh hơn v1 (180-350)
-                        steps=random.randint(4, 8),  # ít bước hơn v1 (5-10)
-                        jitter_scale=0.4,
-                    )
-                    cur_x, cur_y = target_x, target_y
-
-                    # Ghi nhận href để callback map response đúng card
-                    _response_event.clear()  # Reset event trước khi hover
-                    _pending_hrefs.append(href)
-                    if len(_pending_hrefs) > 5:
-                        _pending_hrefs.pop(0)  # giữ window 5 href gần nhất
-
-                    # ── Bước 1: LUÔN chờ min_dwell_ms trên card ──────────────
-                    # FB thường gửi shell response trong ~200ms, rồi entity ~400-800ms sau.
-                    # Phải đứng yên đủ lâu để popup kịp hiện và entity request kịp gửi.
-                    actual_dwell = random.randint(min_dwell_ms, min_dwell_ms + 200)
-                    await page.wait_for_timeout(actual_dwell)
-
-                    # ── Bước 2: Nếu entity chưa về, chờ thêm tối đa phần còn lại ──
-                    remaining_ms = hover_delay_ms - actual_dwell
-                    if remaining_ms > 50 and not _response_event.is_set():
-                        try:
-                            await asyncio.wait_for(
-                                _response_event.wait(),
-                                timeout=remaining_ms / 1000,
-                            )
-                        except asyncio.TimeoutError:
-                            pass  # Không có entity response → chuyển sang card tiếp theo
-
-                    total_hovered += 1
-                except Exception:
-                    pass
-
-            # ── Scroll xuống batch tiếp theo ─────────────────────────────────
-            scroll_y_before = await page.evaluate("() => window.scrollY")
-            await smooth_wheel_scroll(page, distance=800, min_steps=5, max_steps=10)
-            # Chờ lazy-load sau scroll (giảm từ không chờ → 800ms cố định)
-            await page.wait_for_timeout(random.randint(700, 1000))
-            scroll_y_after = await page.evaluate("() => window.scrollY")
-
-            if scroll_y_after <= scroll_y_before:
-                logger.info(
-                    f"[hover_users] Đã chạm đáy sau round {round_i+1}/{scroll_rounds}. Dừng sớm."
-                )
-                break
-
-    finally:
-        # Luôn gỡ listener dù có lỗi hay không
-        page.remove_listener("response", _on_bulk_response)
-
     await _scroll_to_top(page)
-
-    return {
-        "status": "ok",
-        "action": "hover_users",
-        "total_hovered": total_hovered,
-        "total_api_hover": total_api,
-        "total_user_extract": len(_found_entities),
-        "discovery_entity": _found_entities,
-        "rounds": total_rounds,
-        "time_crawl": time.perf_counter() - start_time,
-    }
+    return result
 
 
 async def _extract_list_friends(
@@ -581,6 +479,114 @@ async def _extract_list_friends(
     return {
         "status": "ok",
         "action": "extract_list_friends",
+        "total_user_extract": len(_found_entities),
+        "discovery_entity": _found_entities,
+        "rounds": total_rounds,
+        "time_crawl": time.perf_counter() - start_time,
+    }
+
+
+async def _extract_list_members(
+    page: Page,
+    scroll_rounds: int = 10,
+    **_,
+) -> dict:
+    """
+    Trích xuất trực tiếp danh sách thành viên nhóm từ DOM bằng cách cuộn trang (không hover).
+    """
+
+    FIND_CARDS_JS = """
+    () => {
+        const results = [];
+        const seen = new Set();
+
+        const avatarAnchors = document.querySelectorAll('a[aria-hidden="true"]');
+
+        for (const avatarAnchor of avatarAnchors) {
+            const svgImage = avatarAnchor.querySelector('svg image');
+            if (!svgImage) continue;
+
+            const href = avatarAnchor.href || '';
+            if (!href.includes('facebook.com/')) continue;
+            // Link thành viên nhóm có dạng /groups/<group_id>/user/<uid>/
+            if (!href.includes('/user/')) continue;
+            if (seen.has(href)) continue;
+
+            const card = avatarAnchor.closest('div.x6s0dn4');
+            if (!card) continue;
+
+            // Tên nằm trong thẻ <a role="link"> không có aria-hidden (không phải badge, badge là <div>)
+            const nameEl = card.querySelector('a[role="link"]:not([aria-hidden="true"])');
+            const name = nameEl ? nameEl.textContent.trim() : null;
+
+            const imageUrl =
+                svgImage.getAttribute('xlink:href') ||
+                svgImage.getAttribute('href') ||
+                null;
+
+            const rect = avatarAnchor.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+
+            seen.add(href);
+            results.push({
+                href,
+                name,
+                image_url: imageUrl,
+            });
+        }
+
+        return results;
+    }
+    """
+    from services.scroll_antibot import smooth_wheel_scroll
+    import time
+    import random
+
+    total_rounds = 0
+    seen_hrefs: set[str] = set()
+    # List nội bộ — chỉ chứa entity do HÀM NÀY tìm được, không dùng chung với bên ngoài
+    _found_entities: list[dict] = []
+    start_time = time.perf_counter()
+
+    for round_i in range(scroll_rounds):
+        total_rounds += 1
+
+        try:
+            cards: list[dict] = await page.evaluate(FIND_CARDS_JS)
+        except Exception as e:
+            logger.warning(f"[extract_list_members] Lỗi FIND_CARDS_JS: {e}")
+            cards = []
+
+        new_added = 0
+        for card in cards:
+            if card.get("href") not in seen_hrefs:
+                seen_hrefs.add(card.get("href"))
+                _found_entities.append(card)
+                new_added += 1
+
+        logger.info(
+            f"[extract_list_members] Round {round_i+1}/{scroll_rounds}: Thêm mới {new_added} thành viên. Tổng đã tìm: {len(_found_entities)}"
+        )
+
+        # ── Scroll xuống batch tiếp theo ─────────────────────────────────
+        scroll_y_before = await page.evaluate("() => window.scrollY")
+        await smooth_wheel_scroll(page, distance=800, min_steps=5, max_steps=10)
+        # Chờ lazy-load sau scroll
+        await page.wait_for_timeout(random.randint(800, 1200))
+        scroll_y_after = await page.evaluate("() => window.scrollY")
+
+        if scroll_y_after <= scroll_y_before:
+            logger.info(
+                f"[extract_list_members] Đã chạm đáy sau round {round_i+1}/{scroll_rounds}. Dừng sớm."
+            )
+            break
+
+    # Cuộn ngược về đầu trang sau khi hoàn thành
+    await _scroll_to_top(page)
+
+    return {
+        "status": "ok",
+        "action": "extract_list_members",
         "total_user_extract": len(_found_entities),
         "discovery_entity": _found_entities,
         "rounds": total_rounds,

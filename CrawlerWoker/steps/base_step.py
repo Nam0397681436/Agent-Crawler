@@ -140,27 +140,27 @@ class BaseStep(ABC):
 
     async def execute(self, ctx: StepContext, navigator: Navigator) -> StepResult:
         url = self.build_url(ctx)
+        ok = False
 
         if url:
             ok = await navigator.safe_goto(ctx.page, url)
 
-            if not ok:
-                group_url = self.build_url_group(ctx)
-                if group_url:
-                    logger.warning(
-                        f"[crawler] '{self.label}': navigate chính thất bại, "
-                        f"thử url_group: {group_url}"
-                    )
-                    ok = await navigator.safe_goto(ctx.page, group_url)
+        if not ok:
+            group_url = self.build_url_group(ctx)
+            if group_url:
+                logger.info(
+                    f"[crawler] '{self.label}': điều hướng tới url_group: {group_url}"
+                )
+                ok = await navigator.safe_goto(ctx.page, group_url)
 
-            if not ok:
-                # Cả url chính lẫn url_group (nếu có) đều fail -> skip step này.
-                logger.warning(
-                    f"[crawler] Bỏ qua bước '{self.label}' do navigate thất bại."
-                )
-                return StepResult(
-                    label=self.label, success=False, error="navigate_failed"
-                )
+        if (url or self.build_url_group(ctx)) and not ok:
+            # Cả url chính lẫn url_group (nếu có) đều fail -> skip step này.
+            logger.warning(
+                f"[crawler] Bỏ qua bước '{self.label}' do navigate thất bại."
+            )
+            return StepResult(
+                label=self.label, success=False, error="navigate_failed"
+            )
 
         # Tới đây nghĩa là: không cần url, hoặc url chính ok, hoặc url_group ok.
         try:

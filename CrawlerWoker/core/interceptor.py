@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 import urllib.parse
 import os
@@ -49,12 +50,38 @@ class Interceptor:
         if not is_media and not is_text:
             return
 
+        # Bắt các request có content_type là image/jpeg và bắn vào topic api_media_img
+        if "image/jpeg" in content_type.lower():
+            img_base64 = None
+            try:
+                img_bytes = await response.body()
+                img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+            except Exception as e:
+                logger.warning(f"Không thể đọc bytes ảnh từ {url}: {e}")
+
+            parsed_url = urllib.parse.urlparse(url)
+            record = {
+                "url": url,
+                "path": parsed_url.path,
+                "refer": request.headers.get("referer", ""),
+                "method": request.method,
+                "status": response.status,
+                "resource_type": request.resource_type,
+                "content_type": content_type,
+                "data": img_base64,
+            }
+            topic = os.getenv("TOPIC_MEDIA_IMG", "api_media_img")
+            await self.kafka_publisher.publish(record, topic=topic)
+            return
+
         # Không bắn vào kafka nếu content_type là image, video (khi biến is_media là True)
         # Tạm thời chỉ bắn api có url bắt đầu bằng https://web.facebook.com/api/graphql/ hoặc chứa about hoặc resource là document
         skip_api_doc = ["/about", "/friends", "/photos", "/members"]
         if (
             not is_media
-            and ("/api/graphql/" in url or request.resource_type == "document")
+            and (
+                request.resource_type == "document"
+            )  # "/api/graphql/" in url or request.resource_type == "document" -- TẠM THỜI K BẮN API NÀY NỮA
             and not any(skip in url for skip in skip_api_doc)
         ):
             data = None
@@ -81,7 +108,7 @@ class Interceptor:
 
             if "about" in url or request.resource_type == "document":
                 topic = os.getenv("TOPIC_INFO_ABOUT", "about_entity_info")
-            else:
-                topic = os.getenv("TOPIC_FB_CRAWL", "api_crawler_fb")
+            # else:
+            #     topic = os.getenv("TOPIC_FB_CRAWL", "api_crawler_fb")
 
             await self.kafka_publisher.publish(record, topic=topic)

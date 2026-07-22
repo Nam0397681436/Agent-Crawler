@@ -61,6 +61,9 @@ services:
     ports:
       - "6379:6379"
 
+    # volumes:
+    #   - redis_data:/data    tạm thời chưa mount để chạy test, khi nào triển khai thì mount
+
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "Nam12345@", "ping"]
       interval: 10s

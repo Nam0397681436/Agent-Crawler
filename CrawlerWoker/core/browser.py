@@ -192,8 +192,8 @@ class BrowserManager:
             "--disable-blink-features=AutomationControlled",
             "--start-maximized",
             "--disable-features=PasswordManager",
-            # f"--disable-extensions-except={extension_path}",
-            # f"--load-extension={extension_path}",
+            f"--disable-extensions-except={extension_path}",
+            f"--load-extension={extension_path}",
         ]
 
 

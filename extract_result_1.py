@@ -31,7 +31,7 @@ class KafkaConsumer:
         )
         logger.info("Kết nối Kafka Consumer thành công!")
 
-    def consumer_with_task(self, topic, offset=291):
+    def consumer_with_task(self, topic, offset=381):
         if offset is not None:
             from kafka import TopicPartition
 
@@ -40,7 +40,7 @@ class KafkaConsumer:
                 f"Assign partition 0 của topic '{topic}' tại offset {offset}..."
             )
             self.consumer.assign([partition])
-            self.consumer.seek(partition, 291)
+            self.consumer.seek(partition, 381)
         else:
             logger.info(f"Subscribe vào topic: '{topic}'...")
             self.consumer.subscribe(topics=[topic])
@@ -58,7 +58,7 @@ def thongke():
     for message in consumer:
         count_msg += 1
 
-        with open(f"result/{count_msg}.json", "w", encoding="utf-8") as f:
+        with open(f"result/entity_info_2.json", "w", encoding="utf-8") as f:
             json.dump(message, f, ensure_ascii=False, indent=4)
         break
 

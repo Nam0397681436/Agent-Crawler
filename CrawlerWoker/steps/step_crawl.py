@@ -37,8 +37,19 @@ class HomeStep(BaseStep):
         import time
 
         start_time = time.perf_counter()
-        await actions._scroll(ctx.page, scroll_rounds=5)
-        return {"time_execute": time.perf_counter() - start_time}
+        # await actions._scroll(ctx.page, scroll_rounds=5)
+        # actions thu bài post html
+        results = await actions._extract_info_list_posts(ctx.page, scroll_rounds=7)
+        if results.get("error", False):
+            raise Exception("Không tìm thấy bài viết. Cập nhật HTML")
+
+        return {
+            "time_execute": time.perf_counter() - start_time,
+            "posts": results["posts"],
+            "info_personal": results.get("info_personal", None),
+            "info_basic": results.get("info_basic", None),
+            "count_posts": len(results["posts"]),
+        }
 
 
 class AboutStep(BaseStep):
@@ -48,6 +59,9 @@ class AboutStep(BaseStep):
         import time
 
         start_time = time.perf_counter()
+
+        # Đảm bảo cuộn lên đầu trang để menu tab hiển thị rõ ràng
+        await actions._scroll_to_top(ctx.page)
 
         # Click vào tab "Giới thiệu" thay vì navigate URL
         try:
@@ -162,9 +176,25 @@ class PhotosStep(BaseStep):
 class HomeGroupStep(BaseStep):
     label = "home"
 
+    """TODO: đối với user khóa bảo về trang cá nhân"""
+
     async def run(self, ctx: StepContext):
-        await actions._scroll(ctx.page, scroll_rounds=20)
-        return None
+        import time
+
+        start_time = time.perf_counter()
+        # await actions._scroll(ctx.page, scroll_rounds=5)
+        # actions thu bài post html
+        results = await actions._extract_info_list_posts(
+            ctx.page, scroll_rounds=10, isUser=False
+        )
+        if results.get("error", False):
+            raise Exception("Không tìm thấy bài viết. Cập nhật HTML")
+
+        return {
+            "time_execute": time.perf_counter() - start_time,
+            "posts": results["posts"],
+            "count_posts": len(results["posts"]),
+        }
 
 
 class AboutGroupStep(BaseStep):
@@ -186,12 +216,26 @@ class MembersStep(BaseStep):
     label = "members"
 
     def build_url(self, ctx: StepContext):
-        return f"{ctx.base_url}/members"
+        return _build_section_url(ctx.base_url, "members")
 
     async def run(self, ctx: StepContext):
-        return await actions._hover_users(
+        import time
+
+        start_time = time.perf_counter()
+        result = await actions._extract_list_members(
             page=ctx.page,
-            scroll_rounds=20,
-            hover_delay_ms=500,
-            discovery_entity=ctx.discovery_entity,
+            scroll_rounds=10,
         )
+        result["time_execute"] = time.perf_counter() - start_time + 2
+        # Gộp entity tìm được vào ctx.discovery_entity (có deduplicate)
+        ctx.add_discovery_entities(result.get("discovery_entity", []))
+        logger.info(
+            f"[crawler] Tổng số member discovery hiện tại: {len(ctx.discovery_entity)}"
+        )
+        if len(result.get("discovery_entity", [])) < 30:
+            raise Exception(
+                f"Số lượng member thu thập được ({len(result.get('discovery_entity', []))}) ít hơn 30 nhảy sang luồng crawl user reaction"
+            )
+        result.pop("discovery_entity", None)
+
+        return result

@@ -58,7 +58,7 @@ async def collect_facebook(
 
         # Giao cho crawler pipeline xử lý theo từng step
         fb_crawler_info = CrawlerInfo()
-        if "/group" in url:
+        if "/group" in url and "/user" not in url:
             result = await fb_crawler_info.run_group(page)
         else:
             # Profile or Page (2 cái này dùng chung 1 flow)
@@ -73,7 +73,11 @@ async def collect_facebook(
                     logger.error(f"[collect_facebook] Lỗi khi click vào user: {e}")
                     raise
 
-                result = await fb_crawler_info.run_user_profile(page)
+            # Tất cả URL profile/page (có hoặc không có /user) đều dùng chung flow này
+            result = await fb_crawler_info.run_user_profile(page)
+
+        if result is None:
+            raise ValueError("Pipeline trả về None, không có dữ liệu.")
 
         status = (
             "needs_user" if "[Cần can thiệp]" in result.get("summary", "") else "ok"
@@ -137,14 +141,8 @@ async def collect_facebook(
         #         "summary": "Bị gián đoạn do lỗi hoặc người dùng ngắt (Ctrl+C)",
         #         "error": str(e),
         #     }
-        # else:
-        #     result["status"] = "error"
-        #     result["error"] = str(e)
-
-        # with open("result.json", "w", encoding="utf-8") as f:
-        #     json.dump(result, f, ensure_ascii=False, indent=2)
-
-        # return result
+        # Trả về None để caller (run_collect.py) biết thu thập thất bại
+        return None
 
     finally:
         try:
