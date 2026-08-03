@@ -107,6 +107,16 @@ async def human_like_click(
     hover_wait_ms = _sample_lognormal_ms(120, 650)
     await page.wait_for_timeout(hover_wait_ms)
 
+    # Re-verify bounding box right before click to prevent missing due to layout shift
+    final_box = await locator.bounding_box(timeout=timeout_ms)
+    if final_box:
+        if not (final_box["x"] <= target_x <= final_box["x"] + final_box["width"] and
+                final_box["y"] <= target_y <= final_box["y"] + final_box["height"]):
+            # Target moved out of previous coordinates. Adjust instantly.
+            target_x, target_y = _sample_click_point_in_box(final_box)
+            await page.mouse.move(target_x, target_y, steps=2)
+            await page.wait_for_timeout(random.randint(40, 90))
+
     await page.mouse.down()
 
     click_hold_ms = _sample_lognormal_ms(45, 170)

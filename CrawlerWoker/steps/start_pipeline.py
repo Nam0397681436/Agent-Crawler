@@ -74,9 +74,8 @@ class CrawlerInfo(FacebookCrawler):
         pipeline_crawl_user = StepPipeline(
             steps=[
                 HomeStep(),
-                # friends_no_hover,
+                friends_no_hover,
                 PhotosStep(),
-                UserFromReactionPostEntity(),
             ],
             navigator=self,
         )
@@ -109,8 +108,8 @@ class CrawlerInfo(FacebookCrawler):
         member_step.fallback_step = UserFromReactionPostEntity()
         pipeline = StepPipeline(
             steps=[
-                HomeStep(),
-                AboutStep(),
+                HomeGroupStep(),
+                AboutGroupStep(),
                 MembersStep(),
             ],
             navigator=self,

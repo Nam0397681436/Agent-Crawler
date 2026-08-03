@@ -185,7 +185,7 @@ class HomeGroupStep(BaseStep):
         # await actions._scroll(ctx.page, scroll_rounds=5)
         # actions thu bài post html
         results = await actions._extract_info_list_posts(
-            ctx.page, scroll_rounds=10, isUser=False
+            ctx.page, scroll_rounds=15, isUser=False
         )
         if results.get("error", False):
             raise Exception("Không tìm thấy bài viết. Cập nhật HTML")
@@ -206,10 +206,10 @@ class AboutGroupStep(BaseStep):
     async def run(self, ctx: StepContext):
         from services.scroll_antibot import smart_scroll_for_api
 
-        await smart_scroll_for_api(
-            ctx.page, max_scroll_loops=3, min_wait_ms=600, max_wait_ms=700
-        )
-        return None
+        await ctx.page.wait_for_timeout(2000)
+
+        results = await actions._extract_html_info_group(ctx.page,scroll_rounds=3)
+        return results
 
 
 class MembersStep(BaseStep):

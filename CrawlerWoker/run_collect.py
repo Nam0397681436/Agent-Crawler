@@ -24,11 +24,11 @@ logger = logging.getLogger(__name__)
 # ── Đổi URL tại đây hoặc truyền qua dòng lệnh ───────────────────────────────
 # DEFAULT_URL = "https://www.facebook.com/olas.809605"
 # DEFAULT_URL = "https://web.facebook.com/joon.songsang.9"
-DEFAULT_URL = "https://web.facebook.com/olan.895936"
+# DEFAULT_URL = "https://web.facebook.com/olan.895936"
 # DEFAULT_URL = "https://web.facebook.com/nhoangtan20"
-# DEFAULT_URL = "https://web.facebook.com/thangnch"
-# DEFAULT_URL = "https://web.facebook.com/Khchauu71"
-# DEFAULT_URL = "https://web.facebook.com/profile.php?id=61567177834135"
+# DEFAULT_URL = "https://web.facebook.com/Pham.son.analyst/"
+DEFAULT_URL = "https://web.facebook.com/ngo.manh.hung.872061"
+# DEFAULT_URL = "https://www.facebook.com/groups/386734800368756/"
 
 
 async def discovery_tree(

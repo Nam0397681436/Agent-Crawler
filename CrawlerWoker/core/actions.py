@@ -241,27 +241,188 @@ async def _done(page: Page, summary: str, **_) -> dict:
     return {"status": "done", "action": "done", "summary": summary}
 
 
+async def _extract_html_info_group(page: Page, **_) -> dict:
+    """
+    Extract outerHTML của thẻ div thông tin group có class:
+    'x9f619 x1n2onr6 x1ja2u2z xeuugli xs83m0k xjl7jj x1xmf6yo x1xegmmw x1e56ztr x13fj5qh x19h7ccj xu9j1y6 x7ep2pv'
+    Không scroll, chỉ lấy một lần.
+    """
+    TARGET_SELECTOR = (
+        "div.x9f619.x1n2onr6.x1ja2u2z.xeuugli.xs83m0k.xjl7jj"
+        ".x1xmf6yo.x1xegmmw.x1e56ztr.x13fj5qh.x19h7ccj.xu9j1y6.x7ep2pv"
+    )
+    await smooth_wheel_scroll(page, distance=400, min_steps=2, max_steps=4)
+    el = await page.query_selector(TARGET_SELECTOR)
+    if not el:
+        logger.warning("[group] Không tìm thấy div thông tin group.")
+        return {
+            "error": "Structure changed",
+            "message": "Không tìm thấy div group nào với class đã chỉ định.",
+            "group_info": None,
+        }
+
+    outer_html = await el.evaluate("node => node.outerHTML")
+    logger.info("[group] Đã lấy div thông tin group thành công.")
+    return {"group_info": outer_html}
+
+
+async def _safe_click_in_viewport(page: Page, target, expected_posinset: str) -> bool:
+    """
+    Scroll target vào giữa viewport, verify node vẫn thuộc đúng posinset
+    (tránh bị Facebook recycle node sang bài khác do virtualized list),
+    hit-test toạ độ để tránh trúng link nguy hiểm (Reels, groups...),
+    rồi mới click.
+
+    Trả về True nếu click thành công, False nếu bị chặn bởi bất kỳ lớp
+    bảo vệ nào (không match posinset / ngoài viewport / trúng widget lạ /
+    lỗi khi thao tác).
+    """
+    if await target.count() == 0:
+        return False
+
+    try:
+        # ── Lớp 1: scroll chính xác vào giữa viewport ──
+        await target.scroll_into_view_if_needed(timeout=2000)
+        await target.evaluate(
+            "node => node.scrollIntoView({behavior: 'instant', block: 'center', inline: 'nearest'})"
+        )
+        
+        # Chờ phần tử đứng yên (chống layout shift hoặc cuộn mượt làm trượt click)
+        await target.evaluate("""(node) => {
+            return new Promise((resolve) => {
+                let lastTop = node.getBoundingClientRect().top;
+                let checks = 0;
+                let attempts = 0;
+                const timer = setInterval(() => {
+                    attempts++;
+                    const currentTop = node.getBoundingClientRect().top;
+                    if (Math.abs(currentTop - lastTop) < 1) {
+                        checks++;
+                        if (checks >= 2 || attempts > 15) {
+                            clearInterval(timer);
+                            resolve();
+                        }
+                    } else {
+                        lastTop = currentTop;
+                        checks = 0;
+                    }
+                }, 100);
+            });
+        }""")
+        await page.wait_for_timeout(random.randint(150, 300))
+
+        # ── Lớp 2: verify container posinset vẫn còn tồn tại ──
+        # (phòng trường hợp node bị Facebook recycle sang bài khác
+        # trong lúc scroll/chờ ở trên)
+        still_matches = await page.evaluate(
+            """(posinset) => {
+                const container = document.querySelector(`div[aria-posinset="${posinset}"]`);
+                return !!container;
+            }""",
+            expected_posinset,
+        )
+        if not still_matches:
+            return False
+
+        # ── Lớp 3: đo lại toạ độ SAU khi scroll, kiểm tra nằm trong viewport ──
+        box = await target.bounding_box(timeout=1000)
+        if not (box and box["width"] > 0 and box["height"] > 0):
+            return False
+
+        cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+        viewport = page.viewport_size
+        if not viewport or not (
+            0 <= cx <= viewport["width"] and 0 <= cy <= viewport["height"]
+        ):
+            return False
+
+        # ── Lớp 4: hit-test toạ độ tâm nút để chắc không trúng link nguy hiểm ──
+        is_unsafe = await page.evaluate(
+            """([x, y]) => {
+                const el = document.elementFromPoint(x, y);
+                if (!el) return false;
+                const bad = el.closest(
+                    'a[href^="/reel/"], a[aria-label="Thước phim"], ' +
+                    'a[href*="/groups/"], a[href^="group/"]'
+                );
+                return !!bad;
+            }""",
+            [cx, cy],
+        )
+        if is_unsafe:
+            return False
+
+        await human_like_click(page, target)
+        await page.wait_for_timeout(random.randint(200, 300))
+        return True
+
+    except Exception as e:
+        logger.warning(
+            f"[_safe_click_in_viewport] Click thất bại posinset={expected_posinset}: {e}"
+        )
+        return False
+
+
 async def _extract_info_list_posts(
-    page: Page, scroll_rounds: int = 10, isUser: bool = True
+    page: Page,
+    scroll_rounds: int = 10,
+    isUser: bool = True,
+    get_comment: bool = False,
 ) -> dict:
-    result = {"posts": {}}  # dict để dùng aria-posinset làm key, tránh trùng lặp
+    """
+    Trích xuất danh sách bài viết trên trang (profile/group), mở rộng
+    text bị ẩn ("Xem thêm") và tuỳ chọn mở khung bình luận (get_comment=True).
+    """
+    result = {"posts": {}}
+    post_state: dict[str, dict] = {}
     EMPTY_TEXT = "Không có bài viết"
     TARGET_SELECTOR = 'div[aria-posinset][class~="x1a2a7pz"]'
     VIRTUALIZED_LOADED_SELECTOR = 'div[data-virtualized="false"]'
     SEE_MORE_TEXT = "Xem thêm"
     SEE_MORE_SELECTOR = 'div[role="button"]'
+    COMMENT_BTN_SELECTOR = 'div[aria-label="Viết bình luận"][role="button"]'
     EXTRACTS_MORE_INFO = [
         "Xem thêm thông tin cá nhân",
         "Xem thêm công việc",
         "Xem thêm học vấn",
     ]
 
+    # JS quét toàn bộ DOM 1 lần/round, thay vì N lệnh await riêng lẻ cho từng phần tử
+    GET_UNPROCESSED_JS = """
+    (seenPosinsets, checkComment) => {
+        const targets = document.querySelectorAll('div[aria-posinset][class~="x1a2a7pz"]');
+        const result = [];
+        for (const el of targets) {
+            const posinset = el.getAttribute('aria-posinset');
+            if (!posinset) continue;
+
+            const loadedChild = el.querySelector('div[data-virtualized="false"]');
+            if (!loadedChild) continue; // chưa render đầy đủ, round sau tự bắt lại
+
+            let hasSeeMoreText = false;
+            for (const b of loadedChild.querySelectorAll('div[role="button"]')) {
+                if (b.textContent.trim() === 'Xem thêm') { hasSeeMoreText = true; break; }
+            }
+
+            let hasCommentToggle = false;
+            if (checkComment) {
+                const commentBtn = loadedChild.querySelector(
+                    'div[aria-label="Viết bình luận"][role="button"]'
+                );
+                if (commentBtn) hasCommentToggle = true;
+            }
+
+            result.push({ posinset, hasSeeMoreText, hasCommentToggle });
+        }
+        return result;
+    }
+    """
+
     if isUser:
-        # extract html info basic
+        # ── Extract info cơ bản của user (giữ nguyên logic gốc) ──
         html_basic_info_el = await page.query_selector(
             "div.x9f619.x1n2onr6.x1ja2u2z.x78zum5.xdt5ytf.x193iq5w.xeuugli.x1iyjqo2.xs83m0k.xz9dl7a.x11lfxj5.xjkvuk6.x1g0dm76"
         )
-
         if not html_basic_info_el:
             raise Exception("Lỗi: Facebook có thể đã cập nhật giao diện")
 
@@ -269,7 +430,6 @@ async def _extract_info_list_posts(
         await page.wait_for_timeout(random.randint(1000, 3000))
         logger.info("Đang chờ để click lấy thêm info user")
 
-        # extract html info user trước
         for text in EXTRACTS_MORE_INFO:
             locator = page.get_by_text(text, exact=True)
             if await locator.count() > 0:
@@ -279,19 +439,16 @@ async def _extract_info_list_posts(
         div_element_info = await page.query_selector(
             "div.x1n2onr6.x1ja2u2z.x1jx94hy.xw5cjc7.x1dmpuos.x1vsv7so.xau1kf4.x9f619.xh8yej3.x6ikm8r.x10wlt62.xquyuld.xsag5q8"
         )
-
         if not div_element_info:
-            # bắn log error facebook cập nhật giao diện
             raise Exception("Lỗi: Facebook có thể đã cập nhật giao diện.")
 
         html_content_info = await div_element_info.inner_html()
-        html_basic_info = await html_basic_info_el.inner_html()  # ← fix: extract string, không lưu ElementHandle
+        html_basic_info = await html_basic_info_el.inner_html()
         result["info_personal"] = html_content_info
         result["info_basic"] = html_basic_info
         await _scroll_to_top(page)
 
-    # ---- BƯỚC 1: check trang có xác nhận "Không có bài viết" không ----
-    # dùng get_by_text để match chính xác text (tránh match nhầm text chứa chuỗi con)
+    # ---- BƯỚC 1: check trang có "Không có bài viết" không ----
     empty_locator = page.get_by_text(EMPTY_TEXT, exact=True)
     if await empty_locator.count() > 0:
         logger.info(
@@ -300,73 +457,69 @@ async def _extract_info_list_posts(
         return result
 
     loaded_any = False
+
     for round_idx in range(scroll_rounds):
-        elements = await page.locator(TARGET_SELECTOR).all()
+        seen_list = list(result["posts"].keys())
+        try:
+            candidates = await page.evaluate(
+                GET_UNPROCESSED_JS, [seen_list, get_comment]
+            )
+        except Exception as e:
+            logger.warning(f"[extract_posts] Lỗi GET_UNPROCESSED_JS: {e}")
+            candidates = []
 
-        for el in elements:
-            posinset = await el.get_attribute("aria-posinset")
-            if posinset is None or posinset in result["posts"]:
-                continue  # đã thu thập rồi, hoặc thiếu attribute -> bỏ qua
+        for c in candidates:
+            posinset = c["posinset"]
+            state = post_state.setdefault(
+                posinset,
+                {
+                    "text_expanded": False,
+                    "comments_opened": False,
+                },
+            )
 
-            loaded_child = el.locator(VIRTUALIZED_LOADED_SELECTOR)
-            if await loaded_child.count() > 0:
-                see_more = el.locator(SEE_MORE_SELECTOR).get_by_text(
-                    SEE_MORE_TEXT, exact=True
-                )
-                see_more_count = await see_more.count()
-                if see_more_count > 0:
-                    target = see_more.first
+            # ── Bước A: mở rộng text "Xem thêm" ──
+            if c["hasSeeMoreText"] and not state["text_expanded"]:
+                target = page.locator(
+                    f'div[aria-posinset="{posinset}"] div[role="button"]:has-text("Xem thêm")'
+                ).first
+                if await _safe_click_in_viewport(page, target, posinset):
+                    state["text_expanded"] = True
+                    logger.info(f"Đã click 'Xem thêm' cho aria-posinset={posinset}")
+                    await page.wait_for_timeout(random.randint(150, 250))
+            elif not c["hasSeeMoreText"]:
+                # Bài không có "Xem thêm" -> coi như đã expand, để không chặn bước B
+                state["text_expanded"] = True
 
-                    # Check: hit-test tại toạ độ click, chỉ cần đảm bảo KHÔNG trúng
-                    # link Reels ("Thước phim") hoặc link nhóm ("/groups/")
-                    box = await target.bounding_box(timeout=1000)
-                    is_unsafe_widget = False
-                    if box and box["width"] > 0 and box["height"] > 0:
-                        cx = box["x"] + box["width"] / 2
-                        cy = box["y"] + box["height"] / 2
-                        is_unsafe_widget = await page.evaluate(
-                            """([x, y]) => {
-                                const el = document.elementFromPoint(x, y);
-                                if (!el) return false;
-                                const bad = el.closest(
-                                    'a[href^="/reel/"], a[aria-label="Thước phim"], ' +
-                                    'a[href*="/groups/"], a[href^="group/"]'
-                                );
-                                return !!bad;
-                            }""",
-                            [cx, cy],
-                        )
+            # ── Bước B: mở khung bình luận — CHỈ chạy khi get_comment=True ──
+            if (
+                get_comment
+                and state["text_expanded"]
+                and c["hasCommentToggle"]
+                and not state["comments_opened"]
+            ):
+                comment_toggle = page.locator(
+                    f'div[aria-posinset="{posinset}"] {COMMENT_BTN_SELECTOR}'
+                ).first
+                if await _safe_click_in_viewport(page, comment_toggle, posinset):
+                    state["comments_opened"] = True
+                    logger.info(f"Đã click mở bình luận cho aria-posinset={posinset}")
+                    await page.wait_for_timeout(random.randint(300, 500))
 
-                    if not is_unsafe_widget:
-                        try:
-                            await human_like_click(page, target)
-                            await page.wait_for_timeout(random.randint(200, 300))
-                            logger.info(
-                                f"Đã click 'Xem thêm' cho bài viết aria-posinset={posinset}"
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                f"Click 'Xem thêm' thất bại cho aria-posinset={posinset}: {e}"
-                            )
-                    else:
-                        logger.info(
-                            f"Bỏ qua click 'Xem thêm' cho aria-posinset={posinset} "
-                            f"do không xác thực được toạ độ an toàn."
-                        )
-
-                # Lấy outerHTML SAU KHI đã click mở rộng (nếu có), để có full content
+            # Lấy HTML sau cùng, re-locate lại theo posinset (tránh stale reference)
+            el = page.locator(f'div[aria-posinset="{posinset}"]').first
+            if await el.count() > 0:
                 html = await el.evaluate("node => node.outerHTML")
                 result["posts"][posinset] = html
                 loaded_any = True
                 logger.info(
                     f"[scroll #{round_idx+1}] Đã lấy bài viết aria-posinset={posinset}"
                 )
+
         await smooth_wheel_scroll(page, distance=1000, min_steps=1, max_steps=2)
         await page.wait_for_timeout(random.randint(200, 300))
 
-    # BƯỚC 4: kết luận
-    if not loaded_any and not result.get("empty"):
-        # báo lỗi thay đổi cấu trúc html
+    if not loaded_any:
         return {
             "error": "Structure changed",
             "message": "Không tìm thấy bài viết.",
